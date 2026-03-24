@@ -289,6 +289,61 @@ void SpectrumWidget::draw() {
     draw_trace(pal.trace_main, 2);
     fl_line_style(FL_SOLID, 0);
 
+    // Draw selected groups as a local multiplet-following trace so the highlight
+    // tracks the actual splitting pattern rather than only the center marker.
+    if (!peak_markers_.empty() && !selected_group_ids_.empty()) {
+        const double min_half_window = std::max(0.015, ppm_range * 0.003);
+        const double max_half_window = std::max(0.08, ppm_range * 0.06);
+        for (const auto &marker : peak_markers_) {
+            if (selected_group_ids_.count(marker.group_id) == 0) {
+                continue;
+            }
+
+            double nearest = ppm_range;
+            for (const auto &other : peak_markers_) {
+                if (other.group_id == marker.group_id) {
+                    continue;
+                }
+                nearest = std::min(nearest, std::abs(other.center_ppm - marker.center_ppm));
+            }
+            if (nearest <= 1e-9 || !std::isfinite(nearest)) {
+                nearest = ppm_range * 0.04;
+            }
+
+            const double half_window = std::max(min_half_window, std::min(max_half_window, nearest * 0.42));
+            const double lo = marker.center_ppm - half_window;
+            const double hi = marker.center_ppm + half_window;
+
+            auto draw_segment = [&](Fl_Color color, int width) {
+                fl_color(color);
+                fl_line_style(FL_SOLID, width);
+                bool has_prev = false;
+                int prev_x = 0;
+                int prev_y = 0;
+                for (const auto &p : points_) {
+                    if (p.ppm < lo || p.ppm > hi) {
+                        has_prev = false;
+                        continue;
+                    }
+                    const double x_norm = (max_ppm - p.ppm) / ppm_range;
+                    const double y_norm = (p.intensity - min_intensity) / intensity_range;
+                    const int px = plot_x0 + static_cast<int>(x_norm * plot_w);
+                    const int py = baseline - static_cast<int>(y_norm * (plot_h - 6));
+                    if (has_prev) {
+                        fl_line(prev_x, prev_y, px, py);
+                    }
+                    prev_x = px;
+                    prev_y = py;
+                    has_prev = true;
+                }
+            };
+
+            draw_segment(pal.marker_band, 7);
+            draw_segment(pal.marker_selected, 3);
+            fl_line_style(FL_SOLID, 0);
+        }
+    }
+
     if (!peak_markers_.empty()) {
         for (const auto &marker : peak_markers_) {
             const double x_norm = (max_ppm - marker.center_ppm) / ppm_range;
@@ -297,15 +352,15 @@ void SpectrumWidget::draw() {
                 continue;
             }
             if (selected_group_ids_.count(marker.group_id) > 0) {
-                fl_color(pal.marker_band);
-                fl_rectf(px - 2, plot_y0, 5, plot_h);
                 fl_color(pal.marker_selected);
                 fl_line_style(FL_SOLID, 2);
+                fl_line(px, baseline - 8, px, baseline);
+                fl_pie(px - 3, baseline - 3, 6, 6, 0, 360);
             } else {
                 fl_color(pal.marker);
                 fl_line_style(FL_DASH, 1);
+                fl_line(px, plot_y0, px, baseline);
             }
-            fl_line(px, plot_y0, px, baseline);
         }
         fl_line_style(FL_SOLID, 0);
     }
