@@ -1,0 +1,1276 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import json
+import math
+import os
+import re
+import signal
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
+from rdkit import Chem
+from rdkit.Chem import AllChem, rdDepictor, rdDetermineBonds, rdMolTransforms
+from rdkit.Chem.Draw import rdMolDraw2D
+
+KCAL_PER_EH = 627.509474
+GAS_R_KCAL = 0.0019872041
+TEMP_K = 298.15
+MAX_PARALLEL_XTB = 4
+
+SOLVENT_ALIASES = {
+    "cdcl3": "chcl3",
+    "chcl3": "chcl3",
+    "chloroform": "chcl3",
+    "dmso": "dmso",
+    "h2o": "h2o",
+    "water": "h2o",
+}
+
+MULTIPLICITY_LABELS = {
+    1: "singlet",
+    2: "doublet",
+    3: "triplet",
+    4: "quartet",
+    5: "quintet",
+}
+
+NUCLEUS_ALIASES = {
+    "auto": "auto",
+    "all": "auto",
+    "1h": "1h",
+    "h1": "1h",
+    "h": "1h",
+    "13c": "13c",
+    "c13": "13c",
+    "c": "13c",
+    "19f": "19f",
+    "f19": "19f",
+    "f": "19f",
+}
+
+NUCLEUS_SYMBOL = {
+    "1h": "H",
+    "13c": "C",
+    "19f": "F",
+}
+
+NUCLEUS_LABEL = {
+    "1h": "1H",
+    "13c": "13C",
+    "19f": "19F",
+}
+
+
+@dataclass
+class ConformerResult:
+    conf_id: int
+    energy_eh: float
+    method: str
+
+
+@dataclass
+class GroupPrediction:
+    group_id: int
+    atom_indices: List[int]
+    shift_ppm: float
+    shift_hz: float
+    multiplicity: str
+    j_hz: float
+    integral: float
+
+
+def write_progress(progress_path: Optional[Path], stage: str, message: str, fraction: float) -> None:
+    if progress_path is None:
+        return
+    try:
+        payload = {
+            "stage": stage,
+            "message": message,
+            "fraction": max(0.0, min(1.0, float(fraction))),
+            "timestamp_unix": int(time.time()),
+        }
+        tmp = progress_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.replace(progress_path)
+    except Exception:
+        # Progress is best-effort and should never abort the main workflow.
+        return
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="EasyNMR backend worker")
+    parser.add_argument("--request", required=True, help="Request JSON path")
+    parser.add_argument("--response", required=True, help="Response JSON path")
+    return parser.parse_args()
+
+
+def hash_seed(*parts: str) -> int:
+    digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+    return int(digest[:16], 16)
+
+
+def parse_float(text: str) -> Optional[float]:
+    try:
+        return float(text)
+    except Exception:
+        return None
+
+
+def normalize_nucleus(text: str) -> str:
+    return NUCLEUS_ALIASES.get(text.strip().lower(), "1h")
+
+
+def nuclei_present(mol: Chem.Mol) -> List[str]:
+    targets = [("1h", 1), ("13c", 6), ("19f", 9)]
+    out: List[str] = []
+    for nucleus, atomic_number in targets:
+        if any(atom.GetAtomicNum() == atomic_number for atom in mol.GetAtoms()):
+            out.append(nucleus)
+    return out
+
+
+def read_xyz(path: Path) -> Tuple[List[str], np.ndarray]:
+    lines = path.read_text(encoding="utf-8").strip().splitlines()
+    if len(lines) < 3:
+        raise ValueError(f"Invalid XYZ file: {path}")
+
+    n_atoms = int(lines[0].strip())
+    symbols: List[str] = []
+    coords: List[List[float]] = []
+    for line in lines[2 : 2 + n_atoms]:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        symbols.append(parts[0])
+        coords.append([float(parts[1]), float(parts[2]), float(parts[3])])
+
+    if len(symbols) != n_atoms:
+        raise ValueError(f"Unexpected atom count in XYZ: {path}")
+
+    return symbols, np.array(coords, dtype=float)
+
+
+def write_conf_xyz(mol: Chem.Mol, conf_id: int, path: Path, title: str) -> None:
+    conf = mol.GetConformer(conf_id)
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write(f"{mol.GetNumAtoms()}\n")
+        handle.write(f"{title}\n")
+        for atom_idx, atom in enumerate(mol.GetAtoms()):
+            pos = conf.GetAtomPosition(atom_idx)
+            handle.write(f"{atom.GetSymbol()} {pos.x:.10f} {pos.y:.10f} {pos.z:.10f}\n")
+
+
+def write_editable_xyz(mol: Chem.Mol, path: Path, warnings: List[str]) -> None:
+    editable = Chem.Mol(mol)
+    conf_id = 0
+
+    if editable.GetNumConformers() == 0:
+        params = AllChem.ETKDGv3()
+        params.randomSeed = 0xE11A
+        conf_id = AllChem.EmbedMolecule(editable, params)
+
+        if conf_id < 0:
+            try:
+                rdDepictor.SetPreferCoordGen(True)
+                rdDepictor.Compute2DCoords(editable)
+                conf_id = 0
+                warnings.append("3D embedding failed for editor export; wrote 2D XYZ fallback.")
+            except Exception:
+                raise ValueError("Could not generate coordinates for editable XYZ export.")
+        else:
+            try:
+                AllChem.MMFFOptimizeMolecule(editable, confId=conf_id, maxIters=120)
+            except Exception:
+                warnings.append("MMFF optimization failed for editor export; using embedded ETKDG geometry.")
+    else:
+        conf_id = editable.GetConformer().GetId()
+
+    write_conf_xyz(editable, conf_id, path, "EasyNMR editable structure")
+
+
+def load_molecule(input_format: str, value: str, warnings: List[str]) -> Chem.Mol:
+    mol: Optional[Chem.Mol] = None
+    path = Path(value)
+
+    if input_format == "smiles":
+        mol = Chem.MolFromSmiles(value)
+        if mol is None:
+            raise ValueError("Failed to parse SMILES input")
+    elif input_format in {"mol", "sdf"}:
+        if path.exists():
+            if input_format == "mol":
+                mol = Chem.MolFromMolFile(str(path), removeHs=False)
+            else:
+                supplier = Chem.SDMolSupplier(str(path), removeHs=False)
+                mol = supplier[0] if supplier and len(supplier) > 0 else None
+        else:
+            if input_format == "mol":
+                mol = Chem.MolFromMolBlock(value, removeHs=False)
+            else:
+                parts = value.split("$$$$")
+                mol = Chem.MolFromMolBlock(parts[0], removeHs=False) if parts and parts[0].strip() else None
+        if mol is None:
+            raise ValueError(f"Failed to parse {input_format} input")
+    elif input_format == "xyz":
+        xyz_path = path
+        if not xyz_path.exists():
+            tmp = Path(tempfile.mkdtemp(prefix="easynmr_xyz_")) / "input.xyz"
+            tmp.write_text(value, encoding="utf-8")
+            xyz_path = tmp
+        mol = Chem.MolFromXYZFile(str(xyz_path))
+        if mol is None:
+            raise ValueError("Failed to parse XYZ input")
+        try:
+            rdDetermineBonds.DetermineBonds(mol, charge=0)
+        except Exception:
+            warnings.append("Bond perception from XYZ was uncertain; connectivity may be approximate.")
+    else:
+        raise ValueError(f"Unsupported input format '{input_format}'")
+
+    try:
+        Chem.SanitizeMol(mol)
+    except Exception:
+        warnings.append("Molecule sanitization raised warnings; proceeding with best-effort interpretation.")
+
+    if any(atom.GetNumRadicalElectrons() > 0 for atom in mol.GetAtoms()):
+        warnings.append("Radical detected: prediction quality may be lower in current fast workflow.")
+
+    if Chem.GetFormalCharge(mol) != 0:
+        warnings.append("Charged species detected: prediction quality depends on protonation/state correctness.")
+
+    return Chem.AddHs(mol)
+
+
+def write_structure_svg(mol: Chem.Mol, path: Path) -> None:
+    tagged = Chem.Mol(mol)
+    for atom in tagged.GetAtoms():
+        atom.SetAtomMapNum(atom.GetIdx() + 1)
+
+    mol2d = Chem.RemoveHs(tagged)
+    rdDepictor.SetPreferCoordGen(True)
+    rdDepictor.Compute2DCoords(mol2d)
+    for atom in mol2d.GetAtoms():
+        # Display original 1-based atom labels to match assignment numbering.
+        atom.SetProp("atomNote", str(atom.GetAtomMapNum()))
+
+    drawer = rdMolDraw2D.MolDraw2DSVG(380, 260)
+    opts = drawer.drawOptions()
+    opts.legendFontSize = 14
+    opts.addAtomIndices = False
+    drawer.DrawMolecule(mol2d)
+    drawer.FinishDrawing()
+
+    svg = drawer.GetDrawingText()
+    path.write_text(svg, encoding="utf-8")
+
+
+def write_structure_geometry_csv(mol: Chem.Mol, atoms_csv: Path, bonds_csv: Path) -> None:
+    tagged = Chem.Mol(mol)
+    for atom in tagged.GetAtoms():
+        atom.SetAtomMapNum(atom.GetIdx() + 1)
+
+    mol2d = Chem.RemoveHs(tagged)
+    rdDepictor.SetPreferCoordGen(True)
+    rdDepictor.Compute2DCoords(mol2d)
+    conf = mol2d.GetConformer()
+
+    with atoms_csv.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["atom_index", "element", "x", "y", "attached_h"])
+        for atom in mol2d.GetAtoms():
+            orig_idx1 = atom.GetAtomMapNum()
+            orig_idx0 = orig_idx1 - 1
+            pos = conf.GetAtomPosition(atom.GetIdx())
+            orig_atom = mol.GetAtomWithIdx(orig_idx0)
+            attached_h = [nbr.GetIdx() + 1 for nbr in orig_atom.GetNeighbors() if nbr.GetAtomicNum() == 1]
+            writer.writerow(
+                [
+                    orig_idx1,
+                    atom.GetSymbol(),
+                    f"{pos.x:.6f}",
+                    f"{pos.y:.6f}",
+                    ";".join(str(h) for h in attached_h),
+                ]
+            )
+
+    with bonds_csv.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["atom_a", "atom_b", "order"])
+        for bond in mol2d.GetBonds():
+            a = bond.GetBeginAtom().GetAtomMapNum()
+            b = bond.GetEndAtom().GetAtomMapNum()
+            order = int(round(float(bond.GetBondTypeAsDouble())))
+            writer.writerow([a, b, max(1, order)])
+
+
+def embed_conformers(mol: Chem.Mol, max_conformers: int, seed: int, warnings: List[str]) -> List[int]:
+    n_confs = max(1, min(max_conformers, 60))
+    params = AllChem.ETKDGv3()
+    params.randomSeed = seed & 0x7FFFFFFF
+    params.pruneRmsThresh = 0.2
+
+    conf_ids = list(AllChem.EmbedMultipleConfs(mol, numConfs=n_confs, params=params))
+    if not conf_ids:
+        conf_id = AllChem.EmbedMolecule(mol, randomSeed=params.randomSeed)
+        if conf_id < 0:
+            raise RuntimeError("Conformer embedding failed")
+        conf_ids = [conf_id]
+
+    try:
+        AllChem.MMFFOptimizeMoleculeConfs(mol, numThreads=0, maxIters=250)
+    except Exception:
+        try:
+            AllChem.UFFOptimizeMoleculeConfs(mol, numThreads=0, maxIters=250)
+        except Exception:
+            warnings.append("Local force-field pre-optimization failed; continuing with raw embedded conformers.")
+
+    return conf_ids
+
+
+def mmff_energy(mol: Chem.Mol, conf_id: int) -> Optional[float]:
+    props = AllChem.MMFFGetMoleculeProperties(mol)
+    if props is None:
+        return None
+    ff = AllChem.MMFFGetMoleculeForceField(mol, props, confId=conf_id)
+    if ff is None:
+        return None
+    return float(ff.CalcEnergy()) / KCAL_PER_EH
+
+
+def run_xtb_optimize(
+    xtb_bin: str,
+    mol: Chem.Mol,
+    conf_id: int,
+    solvent: str,
+    output_dir: Path,
+    timeout_s: int,
+) -> Optional[float]:
+    archive_dir = output_dir / f"xtb_conf_{conf_id}"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = Path(tempfile.mkdtemp(prefix=f"easynmr_xtb_conf_{conf_id}_"))
+    log_path = archive_dir / "xtb.log"
+    stdout = ""
+    stderr = ""
+
+    try:
+        xyz_path = run_dir / "input.xyz"
+        write_conf_xyz(mol, conf_id, xyz_path, f"conf-{conf_id}")
+
+        cmd = [xtb_bin, str(xyz_path), "--gfn2", "--opt", "loose"]
+        if solvent:
+            cmd.extend(["--alpb", solvent])
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=run_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+        except Exception:
+            return None
+
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:
+                proc.kill()
+            stdout, stderr = proc.communicate()
+            log_path.write_text((stdout or "") + "\n" + (stderr or ""), encoding="utf-8")
+            return None
+
+        log_path.write_text((stdout or "") + "\n" + (stderr or ""), encoding="utf-8")
+        if proc.returncode != 0:
+            return None
+
+        matches = re.findall(r"TOTAL ENERGY\s+(-?\d+\.\d+)\s+Eh", stdout)
+        energy_eh = float(matches[-1]) if matches else None
+
+        run_opt_xyz = run_dir / "xtbopt.xyz"
+        if run_opt_xyz.exists():
+            try:
+                shutil.copy2(run_opt_xyz, archive_dir / "xtbopt.xyz")
+                symbols, coords = read_xyz(run_opt_xyz)
+                if len(symbols) == mol.GetNumAtoms():
+                    conf = mol.GetConformer(conf_id)
+                    for i, (_, xyz) in enumerate(zip(symbols, coords)):
+                        conf.SetAtomPosition(i, Chem.rdGeometry.Point3D(float(xyz[0]), float(xyz[1]), float(xyz[2])))
+            except Exception:
+                pass
+
+        return energy_eh
+    finally:
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+
+def optimize_conformers(
+    mol: Chem.Mol,
+    conf_ids: Sequence[int],
+    solvent: str,
+    output_dir: Path,
+    warnings: List[str],
+    progress_path: Optional[Path] = None,
+) -> List[ConformerResult]:
+    xtb_bin = os.environ.get("EASYNMR_XTB", "xtb")
+    xtb_path = shutil.which(xtb_bin)
+
+    results: List[ConformerResult] = []
+
+    if xtb_path is None:
+        warnings.append("xTB not found in PATH; using MMFF energies only.")
+        total = max(1, len(conf_ids))
+        for i, conf_id in enumerate(conf_ids, start=1):
+            e = mmff_energy(mol, conf_id)
+            if e is None:
+                e = float(conf_id) * 1e-6
+            results.append(ConformerResult(conf_id=conf_id, energy_eh=e, method="mmff"))
+            write_progress(
+                progress_path,
+                "conformer_optimization",
+                f"Optimizing conformers with MMFF fallback only ({i}/{total})",
+                0.38 + 0.30 * (i / total),
+            )
+        return results
+
+    max_workers = max(1, min(MAX_PARALLEL_XTB, len(conf_ids)))
+    timeout_s = int(os.environ.get("EASYNMR_XTB_TIMEOUT", "25"))
+    total = max(1, len(conf_ids))
+    completed = 0
+    xtb_count = 0
+    fallback_count = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_map = {
+            pool.submit(run_xtb_optimize, xtb_path, mol, conf_id, solvent, output_dir, timeout_s): conf_id for conf_id in conf_ids
+        }
+        for future in as_completed(future_map):
+            conf_id = future_map[future]
+            energy_eh = future.result()
+            if energy_eh is None:
+                fallback = mmff_energy(mol, conf_id)
+                if fallback is None:
+                    fallback = float(conf_id) * 1e-6
+                results.append(ConformerResult(conf_id=conf_id, energy_eh=fallback, method="mmff-fallback"))
+                fallback_count += 1
+            else:
+                results.append(ConformerResult(conf_id=conf_id, energy_eh=energy_eh, method="xtb"))
+                xtb_count += 1
+            completed += 1
+            write_progress(
+                progress_path,
+                "conformer_optimization",
+                (
+                    "Optimizing conformers with xTB GFN2-xTB + ALPB("
+                    f"{solvent}); completed {completed}/{total}, xTB {xtb_count}, fallback {fallback_count}"
+                ),
+                0.38 + 0.30 * (completed / total),
+            )
+
+    results.sort(key=lambda item: item.energy_eh)
+    return results
+
+
+def boltzmann_weights(energies_kcal: Sequence[float]) -> np.ndarray:
+    if not energies_kcal:
+        return np.array([], dtype=float)
+    rel = np.array(energies_kcal, dtype=float)
+    rel -= np.min(rel)
+    exponents = -rel / (GAS_R_KCAL * TEMP_K)
+    exponents -= np.max(exponents)
+    w = np.exp(exponents)
+    w /= np.sum(w)
+    return w
+
+
+def select_conformers(
+    conformers: Sequence[ConformerResult],
+    energy_window_kcal: float,
+    boltzmann_cutoff: float,
+) -> Tuple[List[ConformerResult], np.ndarray, List[float]]:
+    if not conformers:
+        return [], np.array([], dtype=float), []
+
+    energies_kcal = [(c.energy_eh - conformers[0].energy_eh) * KCAL_PER_EH for c in conformers]
+
+    filtered: List[ConformerResult] = []
+    filtered_rel: List[float] = []
+    for conf, rel in zip(conformers, energies_kcal):
+        if rel <= energy_window_kcal + 1e-9:
+            filtered.append(conf)
+            filtered_rel.append(rel)
+
+    if not filtered:
+        filtered = [conformers[0]]
+        filtered_rel = [0.0]
+
+    weights = boltzmann_weights(filtered_rel)
+
+    idx_sorted = np.argsort(-weights)
+    keep: List[int] = []
+    cumulative = 0.0
+    for idx in idx_sorted:
+        keep.append(int(idx))
+        cumulative += float(weights[idx])
+        if cumulative >= boltzmann_cutoff:
+            break
+
+    keep_sorted = sorted(keep)
+    selected = [filtered[i] for i in keep_sorted]
+    selected_rel = [filtered_rel[i] for i in keep_sorted]
+    selected_weights = boltzmann_weights(selected_rel)
+    return selected, selected_weights, selected_rel
+
+
+def _safe_charge(atom: Chem.Atom) -> float:
+    val = atom.GetProp("_GasteigerCharge") if atom.HasProp("_GasteigerCharge") else "0.0"
+    parsed = parse_float(val)
+    return parsed if parsed is not None else 0.0
+
+
+def estimate_h_shift(mol: Chem.Mol, conf: Chem.Conformer, h_idx: int) -> float:
+    h_atom = mol.GetAtomWithIdx(h_idx)
+    neighbors = list(h_atom.GetNeighbors())
+    if not neighbors:
+        return 1.0
+    heavy = neighbors[0]
+
+    z = heavy.GetAtomicNum()
+    if z == 6:
+        if heavy.GetIsAromatic():
+            base = 7.15
+        elif heavy.GetHybridization() == Chem.HybridizationType.SP2:
+            base = 5.35
+        else:
+            base = 1.15
+    elif z == 7:
+        base = 3.0
+    elif z == 8:
+        base = 2.3
+    else:
+        base = 1.8
+
+    alpha_weights = {7: 0.45, 8: 0.65, 9: 1.1, 15: 0.3, 16: 0.35, 17: 0.9, 35: 0.7}
+    beta_weights = {7: 0.14, 8: 0.18, 9: 0.25, 15: 0.10, 16: 0.12, 17: 0.20, 35: 0.15}
+
+    for nbr in heavy.GetNeighbors():
+        if nbr.GetIdx() == h_idx:
+            continue
+        base += alpha_weights.get(nbr.GetAtomicNum(), 0.0)
+        for nbr2 in nbr.GetNeighbors():
+            if nbr2.GetIdx() in {heavy.GetIdx(), h_idx}:
+                continue
+            base += beta_weights.get(nbr2.GetAtomicNum(), 0.0)
+
+    base += max(-0.6, min(0.6, -0.65 * _safe_charge(heavy)))
+
+    h_pos = conf.GetAtomPosition(h_idx)
+    hetero_bonus = 0.0
+    for atom in mol.GetAtoms():
+        z2 = atom.GetAtomicNum()
+        if z2 in {7, 8, 9, 15, 16, 17, 35}:
+            pos = conf.GetAtomPosition(atom.GetIdx())
+            dist = math.dist((h_pos.x, h_pos.y, h_pos.z), (pos.x, pos.y, pos.z))
+            if dist < 3.0:
+                hetero_bonus += (3.0 - dist) * 0.12
+
+    shift = base + hetero_bonus
+    return max(0.0, min(12.0, shift))
+
+
+def group_atoms_by_rank(mol: Chem.Mol, atomic_number: int) -> List[List[int]]:
+    ranks = Chem.CanonicalRankAtoms(mol, breakTies=False)
+    rank_to_atoms: Dict[int, List[int]] = {}
+    for atom in mol.GetAtoms():
+        if atom.GetAtomicNum() != atomic_number:
+            continue
+        rank = int(ranks[atom.GetIdx()])
+        rank_to_atoms.setdefault(rank, []).append(atom.GetIdx())
+
+    groups = sorted(rank_to_atoms.values(), key=lambda atom_list: min(atom_list))
+    return groups
+
+
+def group_hydrogens(mol: Chem.Mol) -> List[List[int]]:
+    return group_atoms_by_rank(mol, 1)
+
+
+def parent_heavy_atom(mol: Chem.Mol, h_idx: int) -> Optional[int]:
+    h_atom = mol.GetAtomWithIdx(h_idx)
+    neigh = list(h_atom.GetNeighbors())
+    return neigh[0].GetIdx() if neigh else None
+
+
+def estimate_j_between_groups(mol: Chem.Mol, conf: Chem.Conformer, group_a: List[int], group_b: List[int]) -> float:
+    h_a = group_a[0]
+    h_b = group_b[0]
+
+    p_a = parent_heavy_atom(mol, h_a)
+    p_b = parent_heavy_atom(mol, h_b)
+    if p_a is None or p_b is None:
+        return 0.0
+
+    if p_a == p_b:
+        return 12.0
+
+    atom_a = mol.GetAtomWithIdx(p_a)
+    if any(n.GetIdx() == p_b for n in atom_a.GetNeighbors()):
+        try:
+            phi = rdMolTransforms.GetDihedralDeg(conf, h_a, p_a, p_b, h_b)
+            r = math.radians(phi)
+            j = 7.5 * (math.cos(r) ** 2) - 1.0 * math.cos(r) + 1.5
+            return max(0.5, min(14.0, j))
+        except Exception:
+            return 7.0
+
+    return 0.0
+
+
+def estimate_c_shift(mol: Chem.Mol, conf: Chem.Conformer, c_idx: int) -> float:
+    atom = mol.GetAtomWithIdx(c_idx)
+    if atom.GetAtomicNum() != 6:
+        return 0.0
+
+    if atom.GetIsAromatic():
+        base = 128.0
+    elif atom.GetHybridization() == Chem.HybridizationType.SP2:
+        base = 120.0
+    else:
+        base = 25.0
+
+    has_o_double = False
+    has_n_double = False
+    for bond in atom.GetBonds():
+        other = bond.GetOtherAtom(atom)
+        z = other.GetAtomicNum()
+        bo = float(bond.GetBondTypeAsDouble())
+        if z == 8 and bo >= 1.9:
+            has_o_double = True
+        if z == 7 and bo >= 1.9:
+            has_n_double = True
+    if has_o_double:
+        base = 175.0
+    elif has_n_double:
+        base = 155.0
+
+    alpha_weights = {7: 13.0, 8: 20.0, 9: 36.0, 15: 6.0, 16: 8.0, 17: 12.0, 35: 10.0}
+    beta_weights = {7: 2.5, 8: 4.0, 9: 8.0, 15: 1.5, 16: 2.0, 17: 3.0, 35: 2.0}
+
+    for nbr in atom.GetNeighbors():
+        base += alpha_weights.get(nbr.GetAtomicNum(), 0.0)
+        for nbr2 in nbr.GetNeighbors():
+            if nbr2.GetIdx() == atom.GetIdx():
+                continue
+            base += beta_weights.get(nbr2.GetAtomicNum(), 0.0)
+
+    base += max(-12.0, min(12.0, -22.0 * _safe_charge(atom)))
+    return max(0.0, min(230.0, base))
+
+
+def estimate_f_shift(mol: Chem.Mol, conf: Chem.Conformer, f_idx: int) -> float:
+    atom = mol.GetAtomWithIdx(f_idx)
+    if atom.GetAtomicNum() != 9:
+        return 0.0
+
+    nbrs = list(atom.GetNeighbors())
+    if not nbrs:
+        return -120.0
+
+    heavy = nbrs[0]
+    if heavy.GetIsAromatic():
+        base = -112.0
+    elif heavy.GetAtomicNum() == 6 and heavy.GetHybridization() == Chem.HybridizationType.SP2:
+        base = -98.0
+    else:
+        base = -128.0
+
+    alpha_weights = {7: 10.0, 8: 14.0, 9: 17.0, 16: 6.0, 17: 5.0, 35: 4.0}
+    beta_weights = {7: 2.0, 8: 3.0, 9: 4.0, 16: 1.5, 17: 1.5, 35: 1.0}
+
+    for nbr in heavy.GetNeighbors():
+        if nbr.GetIdx() == atom.GetIdx():
+            continue
+        base += alpha_weights.get(nbr.GetAtomicNum(), 0.0)
+        for nbr2 in nbr.GetNeighbors():
+            if nbr2.GetIdx() in {heavy.GetIdx(), atom.GetIdx()}:
+                continue
+            base += beta_weights.get(nbr2.GetAtomicNum(), 0.0)
+
+    base += max(-25.0, min(25.0, -35.0 * _safe_charge(heavy)))
+    return max(-260.0, min(120.0, base))
+
+
+def build_h_group_predictions(
+    mol: Chem.Mol,
+    selected_confs: Sequence[ConformerResult],
+    weights: np.ndarray,
+    frequency_mhz: float,
+) -> List[GroupPrediction]:
+    if not selected_confs:
+        return []
+
+    work_mol = Chem.Mol(mol)
+    try:
+        AllChem.ComputeGasteigerCharges(work_mol)
+    except Exception:
+        pass
+
+    h_groups = group_hydrogens(work_mol)
+    conf_map = {c.conf_id: work_mol.GetConformer(c.conf_id) for c in selected_confs}
+
+    weighted_shifts: Dict[int, float] = {}
+    for g_id, atoms in enumerate(h_groups, start=1):
+        group_shift = 0.0
+        for conf_weight, conf_result in zip(weights, selected_confs):
+            conf = conf_map[conf_result.conf_id]
+            atom_shifts = [estimate_h_shift(work_mol, conf, h_idx) for h_idx in atoms]
+            group_shift += float(conf_weight) * float(np.mean(atom_shifts))
+        weighted_shifts[g_id] = group_shift
+
+    couplings: Dict[Tuple[int, int], float] = {}
+    for i, atoms_i in enumerate(h_groups, start=1):
+        for j, atoms_j in enumerate(h_groups, start=1):
+            if j <= i:
+                continue
+            weighted_j = 0.0
+            for conf_weight, conf_result in zip(weights, selected_confs):
+                conf = conf_map[conf_result.conf_id]
+                weighted_j += float(conf_weight) * estimate_j_between_groups(work_mol, conf, atoms_i, atoms_j)
+            if weighted_j >= 0.8:
+                couplings[(i, j)] = weighted_j
+
+    predictions: List[GroupPrediction] = []
+    for g_id, atoms in enumerate(h_groups, start=1):
+        partners: List[Tuple[int, float, int]] = []
+        for (a, b), j_hz in couplings.items():
+            if a == g_id:
+                partners.append((b, j_hz, len(h_groups[b - 1])))
+            elif b == g_id:
+                partners.append((a, j_hz, len(h_groups[a - 1])))
+
+        if not partners:
+            multiplicity = "singlet"
+            j_hz = 0.0
+        elif len(partners) == 1:
+            n = partners[0][2]
+            multiplicity = MULTIPLICITY_LABELS.get(n + 1, "multiplet")
+            j_hz = partners[0][1]
+        else:
+            multiplicity = "multiplet"
+            j_hz = float(np.mean([p[1] for p in partners]))
+
+        shift_ppm = weighted_shifts[g_id]
+        predictions.append(
+            GroupPrediction(
+                group_id=g_id,
+                atom_indices=[idx + 1 for idx in atoms],
+                shift_ppm=shift_ppm,
+                shift_hz=shift_ppm * frequency_mhz,
+                multiplicity=multiplicity,
+                j_hz=j_hz,
+                integral=float(len(atoms)),
+            )
+        )
+
+    predictions.sort(key=lambda item: item.shift_ppm, reverse=True)
+    return predictions
+
+
+def build_nonproton_group_predictions(
+    mol: Chem.Mol,
+    selected_confs: Sequence[ConformerResult],
+    weights: np.ndarray,
+    frequency_mhz: float,
+    nucleus: str,
+) -> List[GroupPrediction]:
+    if not selected_confs:
+        return []
+
+    if nucleus == "13c":
+        atomic_number = 6
+        estimator = estimate_c_shift
+    elif nucleus == "19f":
+        atomic_number = 9
+        estimator = estimate_f_shift
+    else:
+        return []
+
+    work_mol = Chem.Mol(mol)
+    try:
+        AllChem.ComputeGasteigerCharges(work_mol)
+    except Exception:
+        pass
+
+    groups = group_atoms_by_rank(work_mol, atomic_number)
+    if not groups:
+        return []
+
+    conf_map = {c.conf_id: work_mol.GetConformer(c.conf_id) for c in selected_confs}
+    predictions: List[GroupPrediction] = []
+    for g_id, atoms in enumerate(groups, start=1):
+        weighted_shift = 0.0
+        for conf_weight, conf_result in zip(weights, selected_confs):
+            conf = conf_map[conf_result.conf_id]
+            atom_shifts = [estimator(work_mol, conf, atom_idx) for atom_idx in atoms]
+            weighted_shift += float(conf_weight) * float(np.mean(atom_shifts))
+        predictions.append(
+            GroupPrediction(
+                group_id=g_id,
+                atom_indices=[idx + 1 for idx in atoms],
+                shift_ppm=weighted_shift,
+                shift_hz=weighted_shift * frequency_mhz,
+                multiplicity="singlet",
+                j_hz=0.0,
+                integral=float(len(atoms)),
+            )
+        )
+
+    predictions.sort(key=lambda item: item.shift_ppm, reverse=True)
+    return predictions
+
+
+def build_group_predictions(
+    mol: Chem.Mol,
+    selected_confs: Sequence[ConformerResult],
+    weights: np.ndarray,
+    frequency_mhz: float,
+    nucleus: str,
+) -> List[GroupPrediction]:
+    if nucleus == "1h":
+        return build_h_group_predictions(mol, selected_confs, weights, frequency_mhz)
+    return build_nonproton_group_predictions(mol, selected_confs, weights, frequency_mhz, nucleus)
+
+
+def splitting_pattern(multiplicity: str) -> Tuple[np.ndarray, np.ndarray]:
+    if multiplicity == "singlet":
+        return np.array([0.0]), np.array([1.0])
+    if multiplicity == "doublet":
+        return np.array([-0.5, 0.5]), np.array([1.0, 1.0])
+    if multiplicity == "triplet":
+        return np.array([-1.0, 0.0, 1.0]), np.array([1.0, 2.0, 1.0])
+    if multiplicity == "quartet":
+        return np.array([-1.5, -0.5, 0.5, 1.5]), np.array([1.0, 3.0, 3.0, 1.0])
+    if multiplicity == "quintet":
+        return np.array([-2.0, -1.0, 0.0, 1.0, 2.0]), np.array([1.0, 4.0, 6.0, 4.0, 1.0])
+    return np.array([-1.2, -0.6, 0.0, 0.6, 1.2]), np.array([0.8, 1.0, 1.2, 1.0, 0.8])
+
+
+def simulate_spectrum(
+    groups: Sequence[GroupPrediction],
+    frequency_mhz: float,
+    line_shape: str,
+    fwhm_hz: float,
+    nucleus: str,
+) -> List[Tuple[float, float]]:
+    if not groups:
+        return []
+
+    if nucleus == "13c":
+        margin = 20.0
+    elif nucleus == "19f":
+        margin = 35.0
+    else:
+        margin = 1.2
+
+    min_ppm = min(g.shift_ppm for g in groups) - margin
+    max_ppm = max(g.shift_ppm for g in groups) + margin
+    n_points = 6000
+
+    ppm_axis = np.linspace(max_ppm, min_ppm, n_points)
+    intensity = np.zeros_like(ppm_axis)
+
+    gamma = max(1e-5, (fwhm_hz / frequency_mhz) / 2.0)
+    sigma = max(1e-5, (fwhm_hz / frequency_mhz) / 2.355)
+
+    for group in groups:
+        offsets, amps = splitting_pattern(group.multiplicity)
+        amps = amps / np.sum(amps)
+        for offset, amp in zip(offsets, amps):
+            center = group.shift_ppm + (offset * group.j_hz / frequency_mhz)
+            scale = amp * group.integral
+            dx = ppm_axis - center
+            if line_shape == "gaussian":
+                line = np.exp(-((dx**2) / (2.0 * sigma * sigma)))
+            elif line_shape == "voigt":
+                g = np.exp(-((dx**2) / (2.0 * sigma * sigma)))
+                l = (gamma * gamma) / (dx * dx + gamma * gamma)
+                line = 0.5 * (g + l)
+            else:
+                line = (gamma * gamma) / (dx * dx + gamma * gamma)
+            intensity += scale * line
+
+    max_intensity = float(np.max(intensity)) if len(intensity) else 1.0
+    if max_intensity <= 0:
+        max_intensity = 1.0
+    intensity /= max_intensity
+
+    return list(zip(ppm_axis.tolist(), intensity.tolist()))
+
+
+def write_spectrum_csv(path: Path, data: Sequence[Tuple[float, float]]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["ppm", "intensity"])
+        for ppm, intensity in data:
+            writer.writerow([f"{ppm:.6f}", f"{intensity:.8f}"])
+
+
+def write_peaks_csv(path: Path, groups: Sequence[GroupPrediction], nucleus_symbol: str) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["group_id", "shift_ppm", "shift_hz", "multiplicity", "j_hz", "relative_integral", "assignment", "atom_indices"])
+        for group in groups:
+            atom_text = ",".join(str(idx) for idx in group.atom_indices)
+            assignment = ",".join(f"{nucleus_symbol}{idx}" for idx in group.atom_indices)
+            writer.writerow(
+                [
+                    group.group_id,
+                    f"{group.shift_ppm:.4f}",
+                    f"{group.shift_hz:.2f}",
+                    group.multiplicity,
+                    f"{group.j_hz:.2f}",
+                    f"{group.integral:.2f}",
+                    assignment,
+                    atom_text,
+                ]
+            )
+
+
+def write_assignments(path_json: Path, path_csv: Path, groups: Sequence[GroupPrediction], nucleus_symbol: str) -> None:
+    payload = {
+        "mapping_mode": "grouped",
+        "nucleus": nucleus_symbol,
+        "groups": [
+            {
+                "group_id": group.group_id,
+                "atom_indices": group.atom_indices,
+                "center_ppm": round(group.shift_ppm, 4),
+                "multiplicity": group.multiplicity,
+            }
+            for group in groups
+        ],
+    }
+    path_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    with path_csv.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["group_id", "center_ppm", "multiplicity", "atom_indices"])
+        for group in groups:
+            writer.writerow(
+                [
+                    group.group_id,
+                    f"{group.shift_ppm:.4f}",
+                    group.multiplicity,
+                    ",".join(str(idx) for idx in group.atom_indices),
+                ]
+            )
+
+
+def write_spectra_manifest(
+    path_csv: Path,
+    rows: Sequence[Tuple[str, Path, Path, Path]],
+) -> None:
+    with path_csv.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["nucleus", "spectrum_csv", "peaks_csv", "assignments_csv"])
+        for nucleus_label, spectrum_csv, peaks_csv, assignments_csv in rows:
+            writer.writerow([nucleus_label, str(spectrum_csv), str(peaks_csv), str(assignments_csv)])
+
+
+def main() -> int:
+    args = parse_args()
+
+    request_path = Path(args.request)
+    response_path = Path(args.response)
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+
+    job_id = str(request.get("job_id", "job-unknown"))
+    mode = str(request.get("mode", "predict")).lower()
+    input_obj = request.get("input", {})
+    settings = request.get("settings", {})
+
+    input_format = str(input_obj.get("format", "unknown")).lower()
+    input_value = str(input_obj.get("value", ""))
+
+    frequency_mhz = float(settings.get("frequency_mhz", 400.0))
+    line_shape = str(settings.get("line_shape", "lorentzian")).lower()
+    fwhm_hz = float(settings.get("fwhm_hz", 1.0))
+    max_conformers = int(settings.get("max_conformers", 20))
+    boltzmann_cutoff = float(settings.get("boltzmann_cutoff", 0.99))
+    energy_window_kcal = float(settings.get("energy_window_kcal", 6.0))
+    nucleus_request = normalize_nucleus(str(settings.get("nucleus", "auto")))
+
+    solvent_input = str(settings.get("solvent", "cdcl3")).lower()
+    solvent = SOLVENT_ALIASES.get(solvent_input, solvent_input)
+
+    warnings: List[str] = []
+    output_dir = Path(str(request.get("output_dir", request_path.parent)))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    progress_path = Path(str(request.get("progress_json", output_dir / "progress.json")))
+    write_progress(progress_path, "initializing", "Starting EasyNMR workflow", 0.01)
+
+    start_time = time.time()
+
+    write_progress(progress_path, "parse_input", "Parsing input and validating structure", 0.06)
+    try:
+        mol = load_molecule(input_format, input_value, warnings)
+    except Exception as exc:
+        write_progress(progress_path, "failed", f"Input parsing failed: {exc}", 1.0)
+        response = {
+            "status": "failed",
+            "message": f"Input parsing failed: {exc}",
+            "output_dir": str(output_dir),
+            "progress_json": str(progress_path),
+            "warnings": warnings,
+        }
+        response_path.write_text(json.dumps(response, indent=2), encoding="utf-8")
+        return 0
+
+    structure_svg = output_dir / "structure.svg"
+    structure_atoms_csv = output_dir / "structure_atoms.csv"
+    structure_bonds_csv = output_dir / "structure_bonds.csv"
+    structure_xyz = output_dir / "structure_edit.xyz"
+    write_progress(progress_path, "structure_2d", "Generating 2D depiction and atom mapping", 0.14)
+    try:
+        write_structure_svg(mol, structure_svg)
+        write_structure_geometry_csv(mol, structure_atoms_csv, structure_bonds_csv)
+    except Exception:
+        warnings.append("Could not generate 2D structure visualization files.")
+    try:
+        write_editable_xyz(mol, structure_xyz, warnings)
+    except Exception:
+        warnings.append("Could not generate editable XYZ export for structure editor.")
+
+    if mode == "preview":
+        write_progress(progress_path, "done", "Preview complete", 1.0)
+        response = {
+            "status": "ok",
+            "message": "Preview ready",
+            "output_dir": str(output_dir),
+            "structure_svg": str(structure_svg),
+            "structure_atoms_csv": str(structure_atoms_csv),
+            "structure_bonds_csv": str(structure_bonds_csv),
+            "structure_xyz": str(structure_xyz),
+            "progress_json": str(progress_path),
+            "warnings": warnings,
+        }
+        response_path.write_text(json.dumps(response, indent=2), encoding="utf-8")
+        return 0
+
+    available_nuclei = nuclei_present(mol)
+    if nucleus_request == "auto":
+        target_nuclei = available_nuclei
+        if not target_nuclei:
+            write_progress(progress_path, "failed", "No supported nuclei (1H/13C/19F) found", 1.0)
+            response = {
+                "status": "failed",
+                "message": "No supported nuclei (1H/13C/19F) present in the molecule.",
+                "output_dir": str(output_dir),
+                "structure_svg": str(structure_svg),
+                "structure_atoms_csv": str(structure_atoms_csv),
+                "structure_bonds_csv": str(structure_bonds_csv),
+                "structure_xyz": str(structure_xyz),
+                "progress_json": str(progress_path),
+                "warnings": warnings,
+            }
+            response_path.write_text(json.dumps(response, indent=2), encoding="utf-8")
+            return 0
+    else:
+        target_nuclei = [nucleus_request]
+        target_atomic_number = {"1h": 1, "13c": 6, "19f": 9}.get(nucleus_request, 1)
+        target_count = sum(1 for atom in mol.GetAtoms() if atom.GetAtomicNum() == target_atomic_number)
+        if target_count == 0:
+            label = NUCLEUS_LABEL.get(nucleus_request, nucleus_request.upper())
+            write_progress(progress_path, "failed", f"No {label} nuclei found in this molecule", 1.0)
+            response = {
+                "status": "failed",
+                "message": f"No {label} nuclei present in the molecule.",
+                "output_dir": str(output_dir),
+                "structure_svg": str(structure_svg),
+                "structure_atoms_csv": str(structure_atoms_csv),
+                "structure_bonds_csv": str(structure_bonds_csv),
+                "structure_xyz": str(structure_xyz),
+                "progress_json": str(progress_path),
+                "warnings": warnings,
+            }
+            response_path.write_text(json.dumps(response, indent=2), encoding="utf-8")
+            return 0
+
+    seed = hash_seed(job_id, input_value)
+    write_progress(
+        progress_path,
+        "conformer_generation",
+        f"Embedding up to {max_conformers} conformers using ETKDG + MMFF pre-optimization",
+        0.24,
+    )
+    conformer_ids = embed_conformers(mol, max_conformers=max_conformers, seed=seed, warnings=warnings)
+    write_progress(progress_path, "conformer_generation", f"Generated {len(conformer_ids)} conformers", 0.32)
+
+    write_progress(
+        progress_path,
+        "conformer_optimization",
+        f"Starting conformer optimization with xTB GFN2-xTB + ALPB({solvent}), MMFF fallback",
+        0.36,
+    )
+    conformer_results = optimize_conformers(
+        mol,
+        conformer_ids,
+        solvent=solvent,
+        output_dir=output_dir,
+        warnings=warnings,
+        progress_path=progress_path,
+    )
+    write_progress(progress_path, "conformer_optimization", "Conformer optimization complete", 0.70)
+
+    write_progress(
+        progress_path,
+        "boltzmann_selection",
+        (
+            f"Applying Boltzmann weighting (cutoff={boltzmann_cutoff:.2f}, "
+            f"energy window={energy_window_kcal:.1f} kcal/mol)"
+        ),
+        0.76,
+    )
+    selected_confs, conf_weights, rel_energies = select_conformers(
+        conformer_results,
+        energy_window_kcal=energy_window_kcal,
+        boltzmann_cutoff=boltzmann_cutoff,
+    )
+
+    spectra_rows: List[Tuple[str, Path, Path, Path]] = []
+    output_by_nucleus: Dict[str, Dict[str, Path]] = {}
+    total_targets = max(1, len(target_nuclei))
+
+    for idx, target_nucleus in enumerate(target_nuclei, start=1):
+        nucleus_label = NUCLEUS_LABEL.get(target_nucleus, target_nucleus.upper())
+        nucleus_symbol = NUCLEUS_SYMBOL.get(target_nucleus, "H")
+        frac_base = float(idx - 1) / float(total_targets)
+        frac_next = float(idx) / float(total_targets)
+
+        write_progress(
+            progress_path,
+            "nmr_parameter_estimation",
+            (
+                f"[{idx}/{total_targets}] Estimating {nucleus_label} shifts"
+                " and couplings in first-order approximation"
+            ),
+            0.82 + 0.06 * frac_base,
+        )
+        group_predictions = build_group_predictions(
+            mol,
+            selected_confs,
+            conf_weights,
+            frequency_mhz=frequency_mhz,
+            nucleus=target_nucleus,
+        )
+
+        write_progress(
+            progress_path,
+            "spectrum_simulation",
+            f"[{idx}/{total_targets}] Simulating {nucleus_label} spectrum",
+            0.82 + 0.06 * (frac_base + frac_next) / 2.0,
+        )
+        spectrum = simulate_spectrum(group_predictions, frequency_mhz, line_shape, fwhm_hz, target_nucleus)
+
+        suffix = target_nucleus
+        spectrum_csv = output_dir / f"spectrum_{suffix}.csv"
+        peaks_csv = output_dir / f"peaks_{suffix}.csv"
+        assignments_json = output_dir / f"assignments_{suffix}.json"
+        assignments_csv = output_dir / f"assignments_{suffix}.csv"
+
+        write_spectrum_csv(spectrum_csv, spectrum)
+        write_peaks_csv(peaks_csv, group_predictions, nucleus_symbol)
+        write_assignments(assignments_json, assignments_csv, group_predictions, nucleus_symbol)
+
+        spectra_rows.append((nucleus_label, spectrum_csv, peaks_csv, assignments_csv))
+        output_by_nucleus[target_nucleus] = {
+            "spectrum_csv": spectrum_csv,
+            "peaks_csv": peaks_csv,
+            "assignments_json": assignments_json,
+            "assignments_csv": assignments_csv,
+        }
+
+    default_nucleus = "1h" if "1h" in output_by_nucleus else target_nuclei[0]
+    spectrum_csv = output_by_nucleus[default_nucleus]["spectrum_csv"]
+    peaks_csv = output_by_nucleus[default_nucleus]["peaks_csv"]
+    assignments_json = output_by_nucleus[default_nucleus]["assignments_json"]
+    assignments_csv = output_by_nucleus[default_nucleus]["assignments_csv"]
+    spectra_manifest_csv = output_dir / "spectra_manifest.csv"
+    audit_json = output_dir / "audit.json"
+
+    write_progress(progress_path, "write_outputs", "Writing spectrum, peak groups, assignments, and audit", 0.96)
+    write_spectra_manifest(spectra_manifest_csv, spectra_rows)
+
+    runtime_s = time.time() - start_time
+    default_nucleus_symbol = NUCLEUS_SYMBOL.get(default_nucleus, "H")
+    audit = {
+        "tool": "EasyNMR",
+        "backend_version": "0.2.0",
+        "job_id": job_id,
+        "timestamp_unix": int(time.time()),
+        "input": {
+            "format": input_format,
+            "preview": input_value[:120],
+            "formula": Chem.rdMolDescriptors.CalcMolFormula(Chem.RemoveHs(mol)),
+            "formal_charge": Chem.GetFormalCharge(mol),
+        },
+        "settings": settings,
+        "solvent_xtb": solvent,
+        "runtime_seconds": round(runtime_s, 4),
+        "conformers": {
+            "generated": len(conformer_ids),
+            "optimized": len(conformer_results),
+            "selected": len(selected_confs),
+            "selected_relative_kcal": [round(e, 4) for e in rel_energies],
+            "selected_weights": [round(float(w), 6) for w in conf_weights],
+            "methods": [c.method for c in selected_confs],
+        },
+        "warnings": warnings,
+        "pipeline": {
+            "geometry": "ETKDG + xTB(opt) with MMFF fallback",
+            "simulation_mode": "first-order",
+            "nucleus": default_nucleus_symbol,
+            "nuclei": [NUCLEUS_LABEL.get(n, n.upper()) for n in target_nuclei],
+        },
+    }
+    audit_json.write_text(json.dumps(audit, indent=2), encoding="utf-8")
+    write_progress(progress_path, "done", "Prediction complete", 1.0)
+
+    response = {
+        "status": "ok",
+        "message": "Prediction complete",
+        "output_dir": str(output_dir),
+        "spectrum_csv": str(spectrum_csv),
+        "peaks_csv": str(peaks_csv),
+        "assignments_json": str(assignments_json),
+        "assignments_csv": str(assignments_csv),
+        "spectra_manifest_csv": str(spectra_manifest_csv),
+        "audit_json": str(audit_json),
+        "structure_svg": str(structure_svg),
+        "structure_atoms_csv": str(structure_atoms_csv),
+        "structure_bonds_csv": str(structure_bonds_csv),
+        "structure_xyz": str(structure_xyz),
+        "progress_json": str(progress_path),
+        "warnings": warnings,
+    }
+    response_path.write_text(json.dumps(response, indent=2), encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
