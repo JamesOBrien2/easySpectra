@@ -126,19 +126,28 @@ Key columns:
 - `examples/computed/` for computed sample outputs
 - `examples/experimental/` for experimental and converted overlays
 - `examples/external_nmr_pack/` for curated vendor-style source files and provenance
-- `examples/screenshots/` for optional visual comparison screenshots
+- `examples/figures/` for optional visual comparison figures
 
-### Visual examples (screenshots)
+### Visual examples (figures)
 
-If you want to build a quick visual gallery in this README later, store screenshots in `examples/screenshots/` and link them here.
+Store figures in `examples/figures/` and link/embed them here.
+
+Featured figures:
+
+![easySpectra GUI overview](examples/figures/easy_1H_nmr_comparison_highlighted_full_GUI.png)
+
+*Figure 1. easySpectra GUI overview.*
+
+![easy 1H computed vs experimental comparison](examples/figures/easy_1H_nmr_comparison.png)
+
+*Figure 2. Easy 1H computed vs experimental overlay comparison export.*
 
 Suggested gallery table:
 
-| Case | Workflow/Product | SMILES | Screenshot |
+| Case | Workflow/Product | SMILES | Figure |
 |---|---|---|---|
-| easy_1h | NMR `1H` | `CCO` | `![easy 1H](examples/screenshots/easy_1h_gui_compare.png)` |
-| medium_cd | CD | `CC[C@H]1CC[C@@H](C)C(C)C1O` | `![medium CD](examples/screenshots/medium_cd_gui_compare.png)` |
-| hard_31p | NMR `31P` | `O=P(c1ccccc1)(c1ccccc1)c1ccccc1` | `![hard 31P](examples/screenshots/hard_31p_gui_compare.png)` |
+| easy_1h_gui | NMR `1H` | `CCO` | ![easy 1H GUI](examples/figures/easy_1H_nmr_comparison_highlighted_full_GUI.png) |
+| easy_1h_export | NMR `1H` | `CCO` | ![easy 1H export](examples/figures/easy_1H_nmr_comparison.png) |
 
 ### Run the smoke checks
 
