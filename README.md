@@ -1,5 +1,7 @@
 # easySpectra
 
+![easySpectra GUI overview](examples/figures/easy_1H_nmr_comparison_highlighted_full_GUI.png)
+
 `easySpectra` is a local app for predicting and comparing spectra without needing cloud services.
 
 It is built for ease of use:
@@ -114,12 +116,6 @@ Bundled data locations:
 - `examples/experimental/`
 - `examples/external_nmr_pack/`
 - `examples/figures/`
-
-### Example figures
-
-![easySpectra GUI overview](examples/figures/easy_1H_nmr_comparison_highlighted_full_GUI.png)
-
-*Figure 1. easySpectra GUI overview.*
 
 ### Project check scripts
 
