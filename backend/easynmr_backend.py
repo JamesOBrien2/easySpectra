@@ -147,6 +147,23 @@ def normalize_nucleus(text: str) -> str:
     return NUCLEUS_ALIASES.get(text.strip().lower(), "1h")
 
 
+def maybe_read_text_from_path(raw: str) -> Optional[str]:
+    candidate = raw.strip()
+    if not candidate:
+        return None
+    if "\n" in raw or "\r" in raw:
+        return None
+    if len(candidate) > 1024:
+        return None
+    try:
+        path = Path(candidate)
+        if path.exists() and path.is_file():
+            return path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    return None
+
+
 def normalize_xyz_text(raw: str) -> Tuple[Optional[str], bool]:
     text = raw.strip()
     if not text:
@@ -262,19 +279,19 @@ def write_editable_xyz(mol: Chem.Mol, path: Path, warnings: List[str]) -> None:
 
 def load_molecule(input_format: str, value: str, warnings: List[str]) -> Chem.Mol:
     mol: Optional[Chem.Mol] = None
-    path = Path(value)
+    path_text = maybe_read_text_from_path(value)
 
     if input_format == "smiles":
         mol = Chem.MolFromSmiles(value)
         if mol is None:
             raise ValueError("Failed to parse SMILES input")
     elif input_format in {"mol", "sdf"}:
-        if path.exists():
+        if path_text is not None:
             if input_format == "mol":
-                mol = Chem.MolFromMolFile(str(path), removeHs=False)
+                mol = Chem.MolFromMolBlock(path_text, removeHs=False)
             else:
-                supplier = Chem.SDMolSupplier(str(path), removeHs=False)
-                mol = supplier[0] if supplier and len(supplier) > 0 else None
+                parts = path_text.split("$$$$")
+                mol = Chem.MolFromMolBlock(parts[0], removeHs=False) if parts and parts[0].strip() else None
         else:
             if input_format == "mol":
                 mol = Chem.MolFromMolBlock(value, removeHs=False)
@@ -285,8 +302,8 @@ def load_molecule(input_format: str, value: str, warnings: List[str]) -> Chem.Mo
             raise ValueError(f"Failed to parse {input_format} input")
     elif input_format == "xyz":
         xyz_text = value
-        if path.exists():
-            xyz_text = path.read_text(encoding="utf-8")
+        if path_text is not None:
+            xyz_text = path_text
 
         normalized_xyz, was_normalized = normalize_xyz_text(xyz_text)
         if normalized_xyz is None:
