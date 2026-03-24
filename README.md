@@ -32,20 +32,44 @@ pip install -r backend/requirements.txt
 
 ### 2) Build the project
 
+macOS / Linux:
+
 ```bash
 cmake -S . -B build
 cmake --build build -j
 ```
 
+Windows (PowerShell):
+
+```powershell
+cmake -S . -B build
+cmake --build build --config Release
+```
+
 ### 3) Launch the GUI
+
+macOS / Linux:
 
 ```bash
 ./build/easynmr-gui
 ```
 
+Windows (PowerShell):
+
+```powershell
+.\build\Release\easynmr-gui.exe
+```
+
+If you use a single-config generator (for example Ninja), use:
+
+```powershell
+.\build\easynmr-gui.exe
+```
+
 Note on command names:
 - The product name is `easySpectra`.
 - Current binary names are still `easynmr`, `easynmr-gui`, and `easynmr-expcheck` for compatibility.
+- If FLTK is not found, CMake builds CLI-only. Install FLTK, or use `-DEASYSPECTRA_BUILD_GUI=OFF`.
 
 ## Quick GUI Workflow
 
@@ -56,6 +80,7 @@ Note on command names:
 5. Use `Load Exp` to load an experimental file.
 6. Switch overlays with the `Exp:` selector (`none` or a loaded file).
 7. Click `Export` to save exactly what you see in the spectrum panel.
+8. Export as `.png` or `.ppm` on macOS, Linux, or Windows.
 
 ## Quick CLI Workflow
 

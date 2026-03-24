@@ -29,6 +29,7 @@ class StructureWidget : public Fl_Widget {
     StructureWidget(int x, int y, int w, int h, const char *label = nullptr);
 
     void set_structure(std::vector<StructureAtom> atoms, std::vector<StructureBond> bonds);
+    void set_empty_message(std::string message);
     void set_selected_atom(int atom_index);
     void set_highlight_hydrogens(const std::vector<int> &hydrogens);
     void clear_highlight();
@@ -46,6 +47,7 @@ class StructureWidget : public Fl_Widget {
     std::unordered_set<int> highlighted_hydrogens_;
     std::function<void(int, const std::vector<int> &)> on_atom_selected_;
     std::unordered_map<int, std::pair<int, int>> screen_positions_;
+    std::string empty_message_ = "No 2D structure";
 };
 
 } // namespace easynmr

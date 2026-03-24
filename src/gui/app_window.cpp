@@ -4,6 +4,7 @@
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Image_Surface.H>
 #include <FL/Fl_Native_File_Chooser.H>
+#include <FL/Fl_PNG_Image.H>
 
 #include <algorithm>
 #include <cctype>
@@ -45,6 +46,8 @@ std::string make_overlay_label_from_path(const std::string &path);
 std::string make_unique_overlay_key(
     const std::map<std::string, std::vector<SpectrumPoint>> &overlays,
     const std::string &base_key);
+InputFormat detect_input_format_auto(const std::string &value);
+std::vector<std::string> split_smiles_inputs(const std::string &value);
 
 std::string truncate_text(const std::string &value, std::size_t max_len) {
     if (value.size() <= max_len) {
@@ -167,10 +170,18 @@ void trim_white_border(
     *height = dst_h;
 }
 
-bool export_widget_snapshot_ppm(
+bool capture_widget_snapshot_rgb(
     Fl_Widget *widget,
-    const std::string &output_path,
+    std::vector<unsigned char> *rgb,
+    int *out_w,
+    int *out_h,
     std::string *error_message) {
+    if (rgb == nullptr || out_w == nullptr || out_h == nullptr) {
+        if (error_message != nullptr) {
+            *error_message = "Internal export buffer is not available.";
+        }
+        return false;
+    }
     if (widget == nullptr || widget->w() <= 0 || widget->h() <= 0) {
         if (error_message != nullptr) {
             *error_message = "Spectrum widget is not ready for export.";
@@ -215,11 +226,10 @@ bool export_widget_snapshot_ppm(
     }
 
     const unsigned char *src = reinterpret_cast<const unsigned char *>(raw_data[0]);
-    std::vector<unsigned char> rgb;
-    rgb.resize(static_cast<std::size_t>(width * height * 3));
+    rgb->resize(static_cast<std::size_t>(width * height * 3));
     for (int y = 0; y < height; ++y) {
         const unsigned char *src_row = src + static_cast<std::size_t>(y * line_stride);
-        unsigned char *dst_row = rgb.data() + static_cast<std::size_t>(y * width * 3);
+        unsigned char *dst_row = rgb->data() + static_cast<std::size_t>(y * width * 3);
         for (int x = 0; x < width; ++x) {
             const int src_offset = x * depth;
             const int dst_offset = x * 3;
@@ -230,10 +240,53 @@ bool export_widget_snapshot_ppm(
     }
 
     img->release();
-    int out_w = width;
-    int out_h = height;
-    trim_white_border(&rgb, &out_w, &out_h);
+    *out_w = width;
+    *out_h = height;
+    trim_white_border(rgb, out_w, out_h);
+    return true;
+}
+
+bool export_widget_snapshot_ppm(
+    Fl_Widget *widget,
+    const std::string &output_path,
+    std::string *error_message) {
+    std::vector<unsigned char> rgb;
+    int out_w = 0;
+    int out_h = 0;
+    if (!capture_widget_snapshot_rgb(widget, &rgb, &out_w, &out_h, error_message)) {
+        return false;
+    }
     return write_ppm_rgb(output_path, rgb.data(), out_w, out_h, error_message);
+}
+
+bool export_widget_snapshot_png(
+    Fl_Widget *widget,
+    const std::string &output_path,
+    std::string *error_message) {
+    std::vector<unsigned char> rgb;
+    int out_w = 0;
+    int out_h = 0;
+    if (!capture_widget_snapshot_rgb(widget, &rgb, &out_w, &out_h, error_message)) {
+        return false;
+    }
+    std::error_code ec;
+    std::filesystem::remove(output_path, ec);
+    (void)fl_write_png(output_path.c_str(), rgb.data(), out_w, out_h, 3, out_w * 3);
+    ec.clear();
+    if (!std::filesystem::exists(output_path, ec) || ec) {
+        if (error_message != nullptr) {
+            *error_message = "Could not write PNG output.";
+        }
+        return false;
+    }
+    const auto written_size = std::filesystem::file_size(output_path, ec);
+    if (ec || written_size <= 0) {
+        if (error_message != nullptr) {
+            *error_message = "PNG output file is empty.";
+        }
+        return false;
+    }
+    return true;
 }
 
 bool is_executable_file(const std::string &path) {
@@ -415,6 +468,126 @@ bool try_parse_double(const std::string &text, double &out) {
     } catch (...) {
         return false;
     }
+}
+
+std::vector<std::string> split_whitespace_tokens(const std::string &line) {
+    std::vector<std::string> tokens;
+    std::istringstream iss(line);
+    std::string token;
+    while (iss >> token) {
+        tokens.push_back(token);
+    }
+    return tokens;
+}
+
+bool looks_like_xyz_block(const std::vector<std::string> &lines) {
+    if (lines.size() < 3) {
+        return false;
+    }
+
+    int atom_count = 0;
+    if (!try_parse_int(lines[0], atom_count) || atom_count <= 0) {
+        return false;
+    }
+    if (lines.size() < static_cast<std::size_t>(atom_count + 2)) {
+        return false;
+    }
+
+    for (int i = 0; i < atom_count; ++i) {
+        const std::size_t line_idx = static_cast<std::size_t>(i + 2);
+        if (line_idx >= lines.size()) {
+            return false;
+        }
+        const auto tokens = split_whitespace_tokens(lines[line_idx]);
+        if (tokens.size() < 4) {
+            return false;
+        }
+        double x = 0.0;
+        double y = 0.0;
+        double z = 0.0;
+        if (!try_parse_double(tokens[1], x) || !try_parse_double(tokens[2], y) || !try_parse_double(tokens[3], z)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+InputFormat detect_input_format_auto(const std::string &value) {
+    const std::string clean = trim_copy(value);
+    if (clean.empty()) {
+        return InputFormat::Unknown;
+    }
+
+    std::string lowered = clean;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    if (lowered.find("$$$$") != std::string::npos) {
+        return InputFormat::Sdf;
+    }
+    if (lowered.find("v2000") != std::string::npos
+        || lowered.find("v3000") != std::string::npos
+        || lowered.find("m  end") != std::string::npos) {
+        return InputFormat::Mol;
+    }
+
+    std::vector<std::string> nonempty_lines;
+    {
+        std::istringstream iss(clean);
+        std::string line;
+        while (std::getline(iss, line)) {
+            const std::string trimmed_line = trim_copy(line);
+            if (!trimmed_line.empty()) {
+                nonempty_lines.push_back(trimmed_line);
+            }
+        }
+    }
+
+    if (looks_like_xyz_block(nonempty_lines)) {
+        return InputFormat::Xyz;
+    }
+
+    return InputFormat::Smiles;
+}
+
+std::vector<std::string> split_smiles_inputs(const std::string &value) {
+    std::vector<std::string> entries;
+    std::string current;
+    int bracket_depth = 0;
+    int brace_depth = 0;
+
+    const auto flush_current = [&]() {
+        const std::string trimmed = trim_copy(current);
+        if (!trimmed.empty()) {
+            entries.push_back(trimmed);
+        }
+        current.clear();
+    };
+
+    for (char c : value) {
+        if (c == '[') {
+            ++bracket_depth;
+        } else if (c == ']' && bracket_depth > 0) {
+            --bracket_depth;
+        } else if (c == '{') {
+            ++brace_depth;
+        } else if (c == '}' && brace_depth > 0) {
+            --brace_depth;
+        }
+
+        const bool is_separator =
+            (c == ',' || c == '\n' || c == ';' || c == '\r') && bracket_depth == 0 && brace_depth == 0;
+        if (is_separator) {
+            flush_current();
+            continue;
+        }
+        current.push_back(c);
+    }
+    flush_current();
+
+    return entries;
 }
 
 std::vector<PeakRow> read_peak_rows(const std::string &path) {
@@ -802,6 +975,16 @@ std::string make_unique_overlay_key(
     return candidate + " (copy)";
 }
 
+std::string experimental_import_failure_status(const ExperimentalSpectrumLoadResult &loaded) {
+    std::string hint = " Use a 2-column text/CSV file (x ppm, y intensity).";
+    if (loaded.detected_format == "bruker_raw_directory") {
+        hint = " Select an exported ASCII/CSV file from TopSpin or MNova, not the raw Bruker folder.";
+    } else if (loaded.detected_format == "mnova_project_file") {
+        hint = " Export from MNova as text/CSV (x,y), then import that exported file.";
+    }
+    return "Experimental import failed: " + loaded.error_message + hint;
+}
+
 } // namespace
 
 AppWindow::AppWindow(int w, int h, const char *title)
@@ -863,29 +1046,13 @@ AppWindow::AppWindow(int w, int h, const char *title)
     workflow_choice_->color(ui(255, 255, 255));
     workflow_choice_->callback(on_preview_cb, this);
 
-    auto *format_label = new Fl_Box(panel_x + 116, panel_y + 82, 96, 16, "Format");
-    format_label->box(FL_NO_BOX);
-    format_label->labelsize(12);
-    format_label->labelcolor(ui(86, 97, 112));
-    format_label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-
-    format_choice_ = new Fl_Choice(panel_x + 116, panel_y + 98, 96, 26);
-    format_choice_->add("smiles");
-    format_choice_->add("mol");
-    format_choice_->add("sdf");
-    format_choice_->add("xyz");
-    format_choice_->value(0);
-    format_choice_->box(FL_DOWN_BOX);
-    format_choice_->color(ui(255, 255, 255));
-    format_choice_->callback(on_preview_cb, this);
-
-    auto *solvent_label = new Fl_Box(panel_x + 218, panel_y + 82, 106, 16, "Solvent");
+    auto *solvent_label = new Fl_Box(panel_x + 116, panel_y + 82, 208, 16, "Solvent");
     solvent_label->box(FL_NO_BOX);
     solvent_label->labelsize(12);
     solvent_label->labelcolor(ui(86, 97, 112));
     solvent_label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
-    solvent_choice_ = new Fl_Choice(panel_x + 218, panel_y + 98, 106, 26);
+    solvent_choice_ = new Fl_Choice(panel_x + 116, panel_y + 98, 208, 26);
     solvent_choice_->add("cdcl3");
     solvent_choice_->add("dmso");
     solvent_choice_->add("h2o");
@@ -894,39 +1061,25 @@ AppWindow::AppWindow(int w, int h, const char *title)
     solvent_choice_->color(ui(255, 255, 255));
     solvent_choice_->callback(on_preview_cb, this);
 
-    auto *line_shape_label = new Fl_Box(panel_x + 10, panel_y + 128, 120, 16, "Line shape");
-    line_shape_label->box(FL_NO_BOX);
-    line_shape_label->labelsize(12);
-    line_shape_label->labelcolor(ui(86, 97, 112));
-    line_shape_label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-
-    line_shape_choice_ = new Fl_Choice(panel_x + 10, panel_y + 144, panel_w - 20, 26);
-    line_shape_choice_->add("lorentzian");
-    line_shape_choice_->add("gaussian");
-    line_shape_choice_->add("voigt");
-    line_shape_choice_->value(0);
-    line_shape_choice_->box(FL_DOWN_BOX);
-    line_shape_choice_->color(ui(255, 255, 255));
-
-    auto *input_label = new Fl_Box(panel_x + 10, panel_y + 176, panel_w - 20, 16, "SMILES / structure text");
+    auto *input_label = new Fl_Box(panel_x + 10, panel_y + 128, panel_w - 20, 16, "SMILES / structure text");
     input_label->box(FL_NO_BOX);
     input_label->labelsize(12);
     input_label->labelcolor(ui(86, 97, 112));
     input_label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
-    input_box_ = new ColoredInputEditor(panel_x + 10, panel_y + 192, panel_w - 20, 64);
+    input_box_ = new ColoredInputEditor(panel_x + 10, panel_y + 144, panel_w - 20, 64);
     input_box_->value("CCO");
     input_box_->set_syntax_mode(InputSyntaxMode::SmilesLike);
     input_box_->when(FL_WHEN_CHANGED | FL_WHEN_ENTER_KEY);
     input_box_->callback(on_preview_cb, this);
 
-    auto *structure_title = new Fl_Box(panel_x + 10, panel_y + 264, panel_w - 214, 20, "Interactive Structure");
+    auto *structure_title = new Fl_Box(panel_x + 10, panel_y + 216, panel_w - 214, 20, "Interactive Structure");
     structure_title->box(FL_NO_BOX);
     structure_title->labelsize(12);
     structure_title->labelcolor(ui(86, 97, 112));
     structure_title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
-    edit_button_ = new Fl_Button(panel_x + panel_w - 196, panel_y + 262, 104, 24, "Edit xyzedit");
+    edit_button_ = new Fl_Button(panel_x + panel_w - 196, panel_y + 214, 104, 24, "Edit xyzedit");
     edit_button_->callback(on_edit_structure_cb, this);
     edit_button_->box(FL_UP_BOX);
     edit_button_->color(ui(207, 218, 233));
@@ -934,7 +1087,7 @@ AppWindow::AppWindow(int w, int h, const char *title)
     edit_button_->labelfont(FL_HELVETICA_BOLD);
     edit_button_->labelsize(11);
 
-    preview_button_ = new Fl_Button(panel_x + panel_w - 86, panel_y + 262, 76, 24, "Preview");
+    preview_button_ = new Fl_Button(panel_x + panel_w - 86, panel_y + 214, 76, 24, "Preview");
     preview_button_->callback(on_preview_cb, this);
     preview_button_->box(FL_UP_BOX);
     preview_button_->color(ui(198, 211, 228));
@@ -942,52 +1095,52 @@ AppWindow::AppWindow(int w, int h, const char *title)
     preview_button_->labelfont(FL_HELVETICA_BOLD);
     preview_button_->labelsize(11);
 
-    structure_widget_ = new StructureWidget(panel_x + 10, panel_y + 288, panel_w - 20, 160, nullptr);
+    structure_widget_ = new StructureWidget(panel_x + 10, panel_y + 240, panel_w - 20, 160, nullptr);
     structure_widget_->set_on_atom_selected([this](int atom_index, const std::vector<int> &hydrogens) {
         on_structure_atom_picked(atom_index, hydrogens);
     });
 
-    queue_button_ = new Fl_Button(panel_x + 10, panel_y + 454, 100, 30, "Queue");
+    queue_button_ = new Fl_Button(panel_x + 10, panel_y + 406, 100, 30, "Queue");
     queue_button_->callback(on_queue_job_cb, this);
     queue_button_->box(FL_UP_BOX);
     queue_button_->color(ui(218, 225, 236));
     queue_button_->labelcolor(ui(63, 73, 86));
     queue_button_->labelfont(FL_HELVETICA_BOLD);
 
-    start_button_ = new Fl_Button(panel_x + 116, panel_y + 454, 110, 30, "Run Pending");
+    start_button_ = new Fl_Button(panel_x + 116, panel_y + 406, 110, 30, "Run Pending");
     start_button_->callback(on_start_queue_cb, this);
     start_button_->box(FL_UP_BOX);
     start_button_->color(ui(168, 205, 194));
     start_button_->labelcolor(ui(52, 66, 66));
     start_button_->labelfont(FL_HELVETICA_BOLD);
 
-    cancel_button_ = new Fl_Button(panel_x + 232, panel_y + 454, 92, 30, "Cancel");
+    cancel_button_ = new Fl_Button(panel_x + 232, panel_y + 406, 92, 30, "Cancel");
     cancel_button_->callback(on_cancel_cb, this);
     cancel_button_->box(FL_UP_BOX);
     cancel_button_->color(ui(223, 229, 238));
     cancel_button_->labelcolor(ui(88, 98, 112));
 
-    auto *queue_title = new Fl_Box(panel_x + 10, panel_y + 492, panel_w - 20, 20, "Queue (up to 50 jobs)");
+    auto *queue_title = new Fl_Box(panel_x + 10, panel_y + 444, panel_w - 20, 20, "Queue (up to 50 jobs)");
     queue_title->box(FL_NO_BOX);
     queue_title->labelsize(12);
     queue_title->labelcolor(ui(86, 97, 112));
     queue_title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
-    queue_browser_ = new Fl_Hold_Browser(panel_x + 10, panel_y + 516, panel_w - 20, 140);
+    queue_browser_ = new Fl_Hold_Browser(panel_x + 10, panel_y + 468, panel_w - 20, 140);
     queue_browser_->callback(on_select_job_cb, this);
     queue_browser_->box(FL_DOWN_BOX);
     queue_browser_->color(ui(255, 255, 255));
     queue_browser_->textsize(11);
     queue_browser_->selection_color(ui(224, 236, 248));
 
-    run_selected_button_ = new Fl_Button(panel_x + 10, panel_y + 666, 130, 26, "Run Selected");
+    run_selected_button_ = new Fl_Button(panel_x + 10, panel_y + 618, 130, 26, "Run Selected");
     run_selected_button_->callback(on_run_selected_cb, this);
     run_selected_button_->box(FL_UP_BOX);
     run_selected_button_->color(ui(186, 204, 229));
     run_selected_button_->labelcolor(ui(59, 73, 94));
     run_selected_button_->labelfont(FL_HELVETICA_BOLD);
 
-    status_box_ = new Fl_Box(panel_x + 146, panel_y + 666, panel_w - 156, 26, "Idle");
+    status_box_ = new Fl_Box(panel_x + 146, panel_y + 618, panel_w - 156, 26, "Idle");
     status_box_->box(FL_FLAT_BOX);
     status_box_->color(ui(229, 236, 246));
     status_box_->labelsize(12);
@@ -1176,6 +1329,37 @@ AppWindow::~AppWindow() {
     }
 }
 
+int AppWindow::handle(int event) {
+    if (event == FL_SHORTCUT) {
+        const int state = Fl::event_state();
+        const bool command_or_ctrl = ((state & FL_COMMAND) != 0) || ((state & FL_CTRL) != 0);
+        if (command_or_ctrl) {
+            const int key = Fl::event_key();
+            if (key == 'e' || key == 'E') {
+                on_export_spectrum();
+                return 1;
+            }
+            if (key == 'l' || key == 'L') {
+                on_load_experimental();
+                return 1;
+            }
+            if (key == 'r' || key == 'R') {
+                start_queue();
+                return 1;
+            }
+            if (key == 'p' || key == 'P') {
+                preview_current_input(true);
+                return 1;
+            }
+            if (key == FL_Enter || key == FL_KP_Enter) {
+                queue_current_input();
+                return 1;
+            }
+        }
+    }
+    return Fl_Double_Window::handle(event);
+}
+
 void AppWindow::on_queue_job_cb(Fl_Widget *, void *userdata) {
     static_cast<AppWindow *>(userdata)->queue_current_input();
 }
@@ -1297,17 +1481,13 @@ void AppWindow::on_ui_tick_cb(void *userdata) {
 }
 
 void AppWindow::refresh_input_syntax_mode() {
-    if (input_box_ == nullptr || format_choice_ == nullptr) {
+    if (input_box_ == nullptr) {
         return;
     }
 
-    const char *format_text = format_choice_->text(format_choice_->value());
-    std::string normalized = format_text != nullptr ? format_text : "smiles";
-    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-
-    if (normalized == "xyz") {
+    const std::string raw_input = input_box_->value() != nullptr ? input_box_->value() : "";
+    const InputFormat detected = detect_input_format_auto(raw_input);
+    if (detected == InputFormat::Xyz) {
         input_box_->set_syntax_mode(InputSyntaxMode::XyzLike);
     } else {
         input_box_->set_syntax_mode(InputSyntaxMode::SmilesLike);
@@ -1316,51 +1496,90 @@ void AppWindow::refresh_input_syntax_mode() {
 
 void AppWindow::queue_current_input() {
     refresh_input_syntax_mode();
-
-    QueuedJob job;
-    job.status = "pending";
-
-    job.config.job_name = job_name_input_->value();
-    job.config.input_value = input_box_->value();
-
-    const char *fmt = format_choice_->text(format_choice_->value());
-    const char *solvent = solvent_choice_->text(solvent_choice_->value());
-    const char *shape = line_shape_choice_->text(line_shape_choice_->value());
-    const char *workflow = workflow_choice_ != nullptr ? workflow_choice_->text(workflow_choice_->value()) : "all";
-
-    job.config.workflow_kind = workflow_kind_from_string(workflow ? workflow : "all");
-    if (job.config.workflow_kind == WorkflowKind::Unknown) {
-        job.config.workflow_kind = WorkflowKind::All;
+    std::string raw_input;
+    if (input_box_ != nullptr) {
+        const char *raw_ptr = input_box_->value();
+        if (raw_ptr != nullptr) {
+            raw_input = raw_ptr;
+        }
     }
-    job.config.input_format = input_format_from_string(fmt ? fmt : "smiles");
-    job.config.solvent = solvent ? solvent : "cdcl3";
-    job.config.nucleus = "auto";
-    job.config.line_shape = shape ? shape : "lorentzian";
-
-    if (job.config.input_value.empty()) {
+    const InputFormat detected_format = detect_input_format_auto(raw_input);
+    if (detected_format == InputFormat::Unknown) {
+        status_box_->label("Cannot queue: input is empty");
+        return;
+    }
+    std::vector<std::string> inputs;
+    if (detected_format == InputFormat::Smiles) {
+        inputs = split_smiles_inputs(raw_input);
+    } else {
+        const std::string clean = trim_copy(raw_input);
+        if (!clean.empty()) {
+            inputs.push_back(raw_input);
+        }
+    }
+    if (inputs.empty()) {
         status_box_->label("Cannot queue: input is empty");
         return;
     }
 
+    const std::string base_name = [&]() {
+        const std::string clean_name = trim_copy(job_name_input_ != nullptr ? job_name_input_->value() : "");
+        if (!clean_name.empty()) {
+            return clean_name;
+        }
+        return std::string("untitled");
+    }();
+
+    const char *solvent = solvent_choice_->text(solvent_choice_->value());
+    const char *workflow = workflow_choice_ != nullptr ? workflow_choice_->text(workflow_choice_->value()) : "all";
+    WorkflowKind workflow_kind = workflow_kind_from_string(workflow ? workflow : "all");
+    if (workflow_kind == WorkflowKind::Unknown) {
+        workflow_kind = WorkflowKind::All;
+    }
+
     std::size_t queued_index = 0;
+    std::size_t queued_count = 0;
+    bool queued_any = false;
     {
         std::lock_guard<std::mutex> lock(jobs_mutex_);
-        if (jobs_.size() >= 50) {
+        if (jobs_.size() + inputs.size() > 50) {
             status_box_->label("Queue limit reached (50)");
             return;
         }
-        job.id = "q" + std::to_string(jobs_.size() + 1);
-        jobs_.push_back(job);
-        queued_index = jobs_.size() - 1;
-        if (worker_running_ && run_scope_ == RunScope::PendingQueue) {
-            ++run_total_;
+
+        for (std::size_t i = 0; i < inputs.size(); ++i) {
+            QueuedJob job;
+            job.status = "pending";
+            job.config.job_name = (inputs.size() > 1) ? (base_name + "_" + std::to_string(i + 1)) : base_name;
+            job.config.input_value = inputs[i];
+            job.config.workflow_kind = workflow_kind;
+            job.config.input_format = detected_format;
+            job.config.solvent = solvent ? solvent : "cdcl3";
+            job.config.nucleus = "auto";
+            job.config.line_shape = "lorentzian";
+            job.id = "q" + std::to_string(jobs_.size() + 1);
+            jobs_.push_back(std::move(job));
+            if (!queued_any) {
+                queued_index = jobs_.size() - 1;
+                queued_any = true;
+            }
+            ++queued_count;
+        }
+        if (worker_running_ && run_scope_ == RunScope::PendingQueue && queued_count > 0) {
+            run_total_ += static_cast<int>(queued_count);
         }
     }
 
-    status_box_->label("Job queued; generating structure preview");
+    if (queued_count == 1) {
+        status_box_->label("Job queued; generating structure preview");
+    } else {
+        status_box_->copy_label(("Queued " + std::to_string(queued_count) + " jobs from SMILES list").c_str());
+    }
     refresh_queue_browser();
-    queue_browser_->value(static_cast<int>(queued_index + 1));
-    request_preview_for_job_index(queued_index, true);
+    if (queued_any) {
+        queue_browser_->value(static_cast<int>(queued_index + 1));
+        request_preview_for_job_index(queued_index, true);
+    }
 }
 
 void AppWindow::start_queue() {
@@ -1549,21 +1768,51 @@ void AppWindow::preview_current_input(bool show_status) {
 
     JobConfig cfg;
     cfg.job_name = job_name_input_->value();
-    cfg.input_value = input_box_->value();
+    std::string raw_input;
+    if (input_box_ != nullptr) {
+        const char *raw_ptr = input_box_->value();
+        if (raw_ptr != nullptr) {
+            raw_input = raw_ptr;
+        }
+    }
+    const InputFormat detected_format = detect_input_format_auto(raw_input);
+    if (detected_format == InputFormat::Unknown) {
+        return;
+    }
+    if (detected_format == InputFormat::Smiles) {
+        const auto smiles_entries = split_smiles_inputs(raw_input);
+        if (smiles_entries.size() > 1) {
+            if (structure_widget_ != nullptr) {
+                structure_widget_->set_empty_message("Multiple SMILES detected");
+                structure_widget_->set_structure({}, {});
+            }
+            if (show_status) {
+                status_box_->label("Multiple SMILES detected: queue to run all entries");
+            }
+            return;
+        }
+        if (!smiles_entries.empty()) {
+            cfg.input_value = smiles_entries.front();
+        }
+    } else {
+        cfg.input_value = raw_input;
+    }
+    if (structure_widget_ != nullptr) {
+        structure_widget_->set_empty_message("No 2D structure");
+    }
 
-    const char *fmt = format_choice_->text(format_choice_->value());
     const char *solvent = solvent_choice_->text(solvent_choice_->value());
     const char *workflow = workflow_choice_ != nullptr ? workflow_choice_->text(workflow_choice_->value()) : "all";
     cfg.workflow_kind = workflow_kind_from_string(workflow ? workflow : "all");
     if (cfg.workflow_kind == WorkflowKind::Unknown) {
         cfg.workflow_kind = WorkflowKind::All;
     }
-    cfg.input_format = input_format_from_string(fmt ? fmt : "smiles");
+    cfg.input_format = detected_format;
     cfg.solvent = solvent ? solvent : "cdcl3";
     cfg.nucleus = "auto";
     cfg.need_editable_xyz = false;
 
-    if (cfg.input_value.empty() || cfg.input_format == InputFormat::Unknown) {
+    if (trim_copy(cfg.input_value).empty() || cfg.input_format == InputFormat::Unknown) {
         return;
     }
     launch_preview_async(cfg, show_status);
@@ -1579,20 +1828,46 @@ void AppWindow::edit_current_structure() {
 
     JobConfig cfg;
     cfg.job_name = job_name_input_->value();
-    cfg.input_value = input_box_->value();
-    const char *fmt = format_choice_->text(format_choice_->value());
+    std::string raw_input;
+    if (input_box_ != nullptr) {
+        const char *raw_ptr = input_box_->value();
+        if (raw_ptr != nullptr) {
+            raw_input = raw_ptr;
+        }
+    }
+    const InputFormat detected_format = detect_input_format_auto(raw_input);
+    if (detected_format == InputFormat::Smiles) {
+        const auto smiles_entries = split_smiles_inputs(raw_input);
+        if (smiles_entries.size() > 1) {
+            if (structure_widget_ != nullptr) {
+                structure_widget_->set_empty_message("Multiple SMILES detected");
+                structure_widget_->set_structure({}, {});
+            }
+            status_box_->label("Edit xyzedit supports one molecule at a time");
+            return;
+        }
+        if (!smiles_entries.empty()) {
+            cfg.input_value = smiles_entries.front();
+        }
+    } else {
+        cfg.input_value = raw_input;
+    }
+    if (structure_widget_ != nullptr) {
+        structure_widget_->set_empty_message("No 2D structure");
+    }
+
     const char *solvent = solvent_choice_->text(solvent_choice_->value());
     const char *workflow = workflow_choice_ != nullptr ? workflow_choice_->text(workflow_choice_->value()) : "all";
     cfg.workflow_kind = workflow_kind_from_string(workflow ? workflow : "all");
     if (cfg.workflow_kind == WorkflowKind::Unknown) {
         cfg.workflow_kind = WorkflowKind::All;
     }
-    cfg.input_format = input_format_from_string(fmt ? fmt : "smiles");
+    cfg.input_format = detected_format;
     cfg.solvent = solvent ? solvent : "cdcl3";
     cfg.nucleus = "auto";
     cfg.need_editable_xyz = true;
 
-    if (cfg.input_value.empty() || cfg.input_format == InputFormat::Unknown) {
+    if (trim_copy(cfg.input_value).empty() || cfg.input_format == InputFormat::Unknown) {
         status_box_->label("Cannot open editor: invalid or empty input");
         return;
     }
@@ -1664,13 +1939,6 @@ void AppWindow::edit_current_structure() {
     }
 
     input_box_->value(xyz_text.c_str());
-    for (int i = 0; i < format_choice_->size(); ++i) {
-        const char *option = format_choice_->text(i);
-        if (option != nullptr && std::string(option) == "xyz") {
-            format_choice_->value(i);
-            break;
-        }
-    }
     refresh_input_syntax_mode();
 
     preview_current_input(true);
@@ -1899,7 +2167,7 @@ void AppWindow::on_load_experimental() {
 
     const auto loaded = load_experimental_spectrum(filename);
     if (!loaded.error_message.empty()) {
-        status_box_->copy_label(("Experimental import failed: " + loaded.error_message).c_str());
+        status_box_->copy_label(experimental_import_failure_status(loaded).c_str());
         return;
     }
 
@@ -1987,23 +2255,11 @@ void AppWindow::on_export_spectrum() {
 
     std::string error_message;
     if (ext == ".png") {
-        const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-        fs::path tmp_ppm = fs::temp_directory_path() / ("easyspectra_plot_" + std::to_string(stamp) + ".ppm");
-        if (!export_widget_snapshot_ppm(spectrum_widget_, tmp_ppm.string(), &error_message)) {
+        if (!export_widget_snapshot_png(spectrum_widget_, out_path.string(), &error_message)) {
             if (error_message.empty()) {
                 error_message = "Unknown export failure.";
             }
             status_box_->copy_label(("Export failed: " + error_message).c_str());
-            return;
-        }
-
-        const std::string command = "sips -s format png " + shell_quote(tmp_ppm.string()) + " --out "
-            + shell_quote(out_path.string()) + " >/dev/null 2>&1";
-        const int rc_convert = std::system(command.c_str());
-        std::error_code ec_remove;
-        fs::remove(tmp_ppm, ec_remove);
-        if (rc_convert != 0) {
-            status_box_->label("Export failed: PNG conversion unavailable; use .ppm export");
             return;
         }
     } else {

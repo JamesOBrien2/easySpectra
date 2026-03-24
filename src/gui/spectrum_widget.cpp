@@ -602,6 +602,10 @@ void SpectrumWidget::draw() {
         }
     }
 
+    const int tick_font_size = std::clamp(plot_w / 120, 8, 10);
+    const int axis_font_size = std::clamp(plot_w / 95, 9, 11);
+    const int zoom_font_size = std::clamp(plot_w / 95, 9, 11);
+
     if (zoom_active_) {
         std::ostringstream zoom_note;
         if (reverse_axis) {
@@ -612,12 +616,12 @@ void SpectrumWidget::draw() {
                       << " nm (double-click to reset)";
         }
         fl_color(pal.zoom_text);
-        fl_font(FL_HELVETICA, 11);
+        fl_font(FL_HELVETICA, zoom_font_size);
         fl_draw(zoom_note.str().c_str(), plot_x0 + 130, y() + 18);
     }
 
     fl_color(pal.tick);
-    fl_font(FL_HELVETICA, 10);
+    fl_font(FL_HELVETICA, tick_font_size);
     for (int i = 0; i <= 10; ++i) {
         const int tick_x = plot_x0 + i * plot_w / 10;
         double ppm_tick = 0.0;
@@ -633,7 +637,7 @@ void SpectrumWidget::draw() {
     }
 
     fl_color(pal.axis_label);
-    fl_font(FL_HELVETICA, 11);
+    fl_font(FL_HELVETICA, axis_font_size);
     if (reverse_axis) {
         fl_draw("delta [ppm]", plot_x0 + plot_w - 72, y() + h() - 8);
     } else {

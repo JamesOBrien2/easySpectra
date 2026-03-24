@@ -58,6 +58,16 @@ void StructureWidget::set_structure(std::vector<StructureAtom> atoms, std::vecto
     redraw();
 }
 
+void StructureWidget::set_empty_message(std::string message) {
+    empty_message_ = std::move(message);
+    if (empty_message_.empty()) {
+        empty_message_ = "No 2D structure";
+    }
+    if (atoms_.empty()) {
+        redraw();
+    }
+}
+
 void StructureWidget::set_selected_atom(int atom_index) {
     selected_atom_index_ = atom_index;
     redraw();
@@ -115,7 +125,7 @@ void StructureWidget::draw() {
     if (atoms_.empty()) {
         fl_color(rgb(118, 128, 142));
         fl_font(FL_HELVETICA, 12);
-        fl_draw("No 2D structure", x() + 14, y() + 22);
+        fl_draw(empty_message_.c_str(), x() + 14, y() + 22);
         fl_pop_clip();
         return;
     }
