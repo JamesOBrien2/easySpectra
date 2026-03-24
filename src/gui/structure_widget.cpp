@@ -16,18 +16,24 @@ Fl_Color rgb(unsigned char r, unsigned char g, unsigned char b) {
 
 Fl_Color element_color(const std::string &symbol) {
     if (symbol == "O") {
-        return rgb(215, 51, 51);
+        return rgb(225, 114, 114);
     }
     if (symbol == "N") {
-        return rgb(56, 100, 210);
+        return rgb(121, 141, 220);
     }
     if (symbol == "S") {
-        return rgb(214, 152, 20);
+        return rgb(222, 177, 113);
+    }
+    if (symbol == "P") {
+        return rgb(216, 154, 105);
     }
     if (symbol == "F" || symbol == "Cl" || symbol == "Br" || symbol == "I") {
-        return rgb(25, 132, 74);
+        return rgb(112, 178, 143);
     }
-    return rgb(70, 75, 84);
+    if (symbol == "H") {
+        return rgb(210, 216, 226);
+    }
+    return rgb(98, 106, 122);
 }
 
 bool has_overlap(const std::vector<int> &attached_hydrogens, const std::unordered_set<int> &highlighted) {
@@ -130,7 +136,7 @@ void StructureWidget::draw() {
         screen_positions_[atom.atom_index] = to_screen(atom.x, atom.y, min_x, max_x, min_y, max_y);
     }
 
-    fl_color(rgb(95, 104, 120));
+    fl_color(rgb(100, 111, 132));
     for (const auto &bond : bonds_) {
         const auto a_it = screen_positions_.find(bond.atom_a);
         const auto b_it = screen_positions_.find(bond.atom_b);
@@ -140,7 +146,7 @@ void StructureWidget::draw() {
         const auto [ax, ay] = a_it->second;
         const auto [bx, by] = b_it->second;
 
-        fl_line_style(FL_SOLID, 1);
+        fl_line_style(FL_SOLID, 2);
         fl_line(ax, ay, bx, by);
         if (bond.order >= 2) {
             const double dx = static_cast<double>(bx - ax);
@@ -159,51 +165,25 @@ void StructureWidget::draw() {
         }
         const auto [sx, sy] = pos_it->second;
 
-        const bool is_carbon = (atom.element == "C");
         const bool is_selected = (atom.atom_index == selected_atom_index_);
         const bool touches_highlight = has_overlap(atom.attached_hydrogens, highlighted_hydrogens_);
 
+        if (is_selected) {
+            fl_color(rgb(173, 214, 214));
+            fl_pie(sx - 16, sy - 16, 32, 32, 0, 360);
+        }
         if (touches_highlight) {
-            fl_color(rgb(222, 237, 246));
-            fl_pie(sx - 15, sy - 15, 30, 30, 0, 360);
+            fl_color(rgb(210, 229, 246));
+            fl_pie(sx - 13, sy - 13, 26, 26, 0, 360);
         }
 
-        const bool show_full_atom =
-            !is_carbon || is_selected || touches_highlight;
+        const int radius = is_selected ? 7 : (touches_highlight ? 6 : 5);
+        fl_color(element_color(atom.element));
+        fl_pie(sx - radius, sy - radius, radius * 2, radius * 2, 0, 360);
 
-        if (show_full_atom) {
-            fl_color(rgb(255, 255, 255));
-            fl_pie(sx - 11, sy - 11, 22, 22, 0, 360);
-
-            fl_color(is_selected ? rgb(136, 175, 170) : rgb(196, 207, 221));
-            fl_line_style(FL_SOLID, is_selected ? 3 : 1);
-            fl_arc(sx - 11, sy - 11, 22, 22, 0, 360);
-
-            fl_color(element_color(atom.element));
-            fl_font(FL_HELVETICA_BOLD, 12);
-            fl_draw(atom.element.c_str(), sx - 4, sy + 5);
-        } else {
-            fl_color(rgb(88, 97, 113));
-            fl_pie(sx - 3, sy - 3, 6, 6, 0, 360);
-        }
-
-        std::ostringstream idx;
-        idx << atom.atom_index;
-        fl_color(rgb(122, 131, 146));
-        fl_font(FL_HELVETICA, 9);
-        fl_draw(idx.str().c_str(), sx + 8, sy - 8);
-
-        if (!atom.attached_hydrogens.empty() && (is_selected || touches_highlight)) {
-            std::ostringstream badge;
-            badge << "H" << atom.attached_hydrogens.size();
-            fl_color(rgb(236, 242, 249));
-            fl_rectf(sx - 10, sy + 10, 20, 11);
-            fl_color(rgb(190, 201, 216));
-            fl_rect(sx - 10, sy + 10, 20, 11);
-            fl_color(rgb(99, 108, 123));
-            fl_font(FL_HELVETICA, 8);
-            fl_draw(badge.str().c_str(), sx - 8, sy + 19);
-        }
+        fl_color(is_selected ? rgb(84, 129, 128) : rgb(78, 86, 102));
+        fl_line_style(FL_SOLID, is_selected ? 2 : 1);
+        fl_arc(sx - radius, sy - radius, radius * 2, radius * 2, 0, 360);
     }
 
     fl_line_style(FL_SOLID, 0);
