@@ -121,10 +121,6 @@ Bundled data locations:
 
 *Figure 1. easySpectra GUI overview.*
 
-![easy 1H computed vs experimental comparison](examples/figures/easy_1H_nmr_comparison.png)
-
-*Figure 2. Easy 1H computed vs experimental overlay export.*
-
 ### Project check scripts
 
 - `./scripts/smoke_products_and_experimental.sh` builds the project and runs a quick end-to-end smoke check across key workflows and overlay parsing.
