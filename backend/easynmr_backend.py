@@ -147,6 +147,56 @@ def normalize_nucleus(text: str) -> str:
     return NUCLEUS_ALIASES.get(text.strip().lower(), "1h")
 
 
+def normalize_xyz_text(raw: str) -> Tuple[Optional[str], bool]:
+    text = raw.strip()
+    if not text:
+        return None, False
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < 1:
+        return None, False
+
+    # Already canonical XYZ: atom count line + comment + atom rows.
+    first_parts = lines[0].split()
+    try:
+        declared = int(first_parts[0]) if len(first_parts) == 1 else -1
+        if declared > 0 and len(lines) >= declared + 2:
+            canonical = "\n".join(lines[: declared + 2]) + "\n"
+            return canonical, False
+    except Exception:
+        pass
+
+    parsed_rows: List[Tuple[str, float, float, float]] = []
+    symbol_re = re.compile(r"^[A-Za-z]{1,3}$")
+    for line in lines:
+        parts = line.split()
+        if len(parts) >= 4 and symbol_re.match(parts[0]):
+            x = parse_float(parts[1])
+            y = parse_float(parts[2])
+            z = parse_float(parts[3])
+            if x is None or y is None or z is None:
+                return None, False
+            parsed_rows.append((parts[0], x, y, z))
+            continue
+        if len(parts) >= 5 and parse_float(parts[0]) is not None and symbol_re.match(parts[1]):
+            x = parse_float(parts[2])
+            y = parse_float(parts[3])
+            z = parse_float(parts[4])
+            if x is None or y is None or z is None:
+                return None, False
+            parsed_rows.append((parts[1], x, y, z))
+            continue
+        return None, False
+
+    if not parsed_rows:
+        return None, False
+
+    normalized = [str(len(parsed_rows)), "EasyNMR normalized XYZ block"]
+    for sym, x, y, z in parsed_rows:
+        normalized.append(f"{sym} {x:.10f} {y:.10f} {z:.10f}")
+    return "\n".join(normalized) + "\n", True
+
+
 def nuclei_present(mol: Chem.Mol) -> List[str]:
     targets = [("1h", 1), ("13c", 6), ("19f", 9)]
     out: List[str] = []
@@ -234,12 +284,19 @@ def load_molecule(input_format: str, value: str, warnings: List[str]) -> Chem.Mo
         if mol is None:
             raise ValueError(f"Failed to parse {input_format} input")
     elif input_format == "xyz":
-        xyz_path = path
-        if not xyz_path.exists():
-            tmp = Path(tempfile.mkdtemp(prefix="easynmr_xyz_")) / "input.xyz"
-            tmp.write_text(value, encoding="utf-8")
-            xyz_path = tmp
-        mol = Chem.MolFromXYZFile(str(xyz_path))
+        xyz_text = value
+        if path.exists():
+            xyz_text = path.read_text(encoding="utf-8")
+
+        normalized_xyz, was_normalized = normalize_xyz_text(xyz_text)
+        if normalized_xyz is None:
+            raise ValueError("Failed to parse XYZ input")
+        if was_normalized:
+            warnings.append("XYZ text was normalized from coordinate rows; inferred atom count/comment.")
+
+        tmp = Path(tempfile.mkdtemp(prefix="easynmr_xyz_")) / "input.xyz"
+        tmp.write_text(normalized_xyz, encoding="utf-8")
+        mol = Chem.MolFromXYZFile(str(tmp))
         if mol is None:
             raise ValueError("Failed to parse XYZ input")
         try:
