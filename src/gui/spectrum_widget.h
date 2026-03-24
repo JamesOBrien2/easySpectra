@@ -37,6 +37,8 @@ class SpectrumWidget : public Fl_Widget {
     void set_highlighted_reference(int ref_index);
     void set_nucleus_label(const std::string &label);
     void set_render_settings(const std::string &line_shape, double fwhm_hz, double frequency_mhz);
+    void set_experimental_points(std::vector<SpectrumPoint> points);
+    void clear_experimental_points();
     void set_on_peak_selected(std::function<void(int)> callback);
     bool load_from_csv(const std::string &csv_path);
     void reset_zoom();
@@ -51,6 +53,7 @@ class SpectrumWidget : public Fl_Widget {
     bool point_in_plot(int px, int py) const;
 
     std::vector<SpectrumPoint> points_;
+    std::vector<SpectrumPoint> experimental_points_;
     std::vector<PeakMarker> peak_markers_;
     std::vector<ReferencePeak> reference_peaks_;
     int highlighted_reference_index_ = -1;

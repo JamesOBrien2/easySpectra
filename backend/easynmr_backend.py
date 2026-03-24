@@ -59,18 +59,23 @@ NUCLEUS_ALIASES = {
     "19f": "19f",
     "f19": "19f",
     "f": "19f",
+    "31p": "31p",
+    "p31": "31p",
+    "p": "31p",
 }
 
 NUCLEUS_SYMBOL = {
     "1h": "H",
     "13c": "C",
     "19f": "F",
+    "31p": "P",
 }
 
 NUCLEUS_LABEL = {
     "1h": "1H",
     "13c": "13C",
     "19f": "19F",
+    "31p": "31P",
 }
 
 
@@ -215,7 +220,7 @@ def normalize_xyz_text(raw: str) -> Tuple[Optional[str], bool]:
 
 
 def nuclei_present(mol: Chem.Mol) -> List[str]:
-    targets = [("1h", 1), ("13c", 6), ("19f", 9)]
+    targets = [("1h", 1), ("13c", 6), ("19f", 9), ("31p", 15)]
     out: List[str] = []
     for nucleus, atomic_number in targets:
         if any(atom.GetAtomicNum() == atomic_number for atom in mol.GetAtoms()):
@@ -798,6 +803,63 @@ def estimate_f_shift(mol: Chem.Mol, conf: Chem.Conformer, f_idx: int) -> float:
     return max(-260.0, min(120.0, base))
 
 
+def estimate_p_shift(mol: Chem.Mol, conf: Chem.Conformer, p_idx: int) -> float:
+    atom = mol.GetAtomWithIdx(p_idx)
+    if atom.GetAtomicNum() != 15:
+        return 0.0
+
+    neighbors = list(atom.GetNeighbors())
+    if not neighbors:
+        return 0.0
+
+    carbon_neighbors = 0
+    oxygen_neighbors = 0
+    hetero_neighbors = 0
+    double_o = 0
+    for nbr in neighbors:
+        z = nbr.GetAtomicNum()
+        if z == 6:
+            carbon_neighbors += 1
+        if z == 8:
+            oxygen_neighbors += 1
+        if z not in {1, 6}:
+            hetero_neighbors += 1
+
+        bond = mol.GetBondBetweenAtoms(atom.GetIdx(), nbr.GetIdx())
+        order = float(bond.GetBondTypeAsDouble()) if bond is not None else 1.0
+        if z == 8 and order >= 1.9:
+            double_o += 1
+
+    if double_o > 0:
+        base = 8.0
+        base += 14.0 * min(2, double_o)
+        if oxygen_neighbors >= 2:
+            base -= 14.0
+        if carbon_neighbors >= 2:
+            base += 10.0
+    else:
+        if carbon_neighbors >= 3:
+            base = -24.0
+        elif oxygen_neighbors >= 3:
+            base = -4.0
+        else:
+            base = 10.0
+
+    alpha_weights = {7: 8.0, 8: 10.0, 9: 18.0, 15: 6.0, 16: 10.0, 17: 8.0, 35: 6.0}
+    beta_weights = {7: 2.0, 8: 2.5, 9: 4.0, 15: 1.5, 16: 2.0, 17: 1.5, 35: 1.0}
+
+    for nbr in neighbors:
+        base += alpha_weights.get(nbr.GetAtomicNum(), 0.0)
+        for nbr2 in nbr.GetNeighbors():
+            if nbr2.GetIdx() == atom.GetIdx():
+                continue
+            base += beta_weights.get(nbr2.GetAtomicNum(), 0.0)
+
+    base += 2.5 * hetero_neighbors
+    base += max(-40.0, min(40.0, -80.0 * _safe_charge(atom)))
+    return max(-220.0, min(220.0, base))
+
+
 def build_h_group_predictions(
     mol: Chem.Mol,
     selected_confs: Sequence[ConformerResult],
@@ -890,6 +952,9 @@ def build_nonproton_group_predictions(
     elif nucleus == "19f":
         atomic_number = 9
         estimator = estimate_f_shift
+    elif nucleus == "31p":
+        atomic_number = 15
+        estimator = estimate_p_shift
     else:
         return []
 
@@ -967,6 +1032,8 @@ def simulate_spectrum(
         margin = 20.0
     elif nucleus == "19f":
         margin = 35.0
+    elif nucleus == "31p":
+        margin = 45.0
     else:
         margin = 1.2
 
@@ -1005,12 +1072,97 @@ def simulate_spectrum(
     return list(zip(ppm_axis.tolist(), intensity.tolist()))
 
 
+def _chirality_sign(mol: Chem.Mol) -> float:
+    try:
+        centers = Chem.FindMolChiralCenters(Chem.RemoveHs(mol), includeUnassigned=True)
+    except Exception:
+        centers = []
+    if not centers:
+        return 1.0
+    r_count = sum(1 for _, tag in centers if tag == "R")
+    s_count = sum(1 for _, tag in centers if tag == "S")
+    if r_count == s_count:
+        return 1.0
+    return 1.0 if r_count > s_count else -1.0
+
+
+def _estimate_cd_bands(mol: Chem.Mol, conf_count: int) -> List[Tuple[float, float, float]]:
+    heavy = Chem.RemoveHs(mol)
+    aromatic_rings = int(Chem.rdMolDescriptors.CalcNumAromaticRings(heavy))
+    hetero_count = sum(1 for atom in heavy.GetAtoms() if atom.GetAtomicNum() not in {1, 6})
+    atom_count = heavy.GetNumAtoms()
+    chirality = _chirality_sign(heavy)
+
+    bands: List[Tuple[float, float, float]] = []
+    bands.append((190.0 + min(18.0, 0.9 * hetero_count), 9.0 + 0.25 * atom_count, 1.0 * chirality))
+    bands.append((215.0 + min(24.0, 3.0 * aromatic_rings), 12.0 + 0.2 * atom_count, -0.75 * chirality))
+    bands.append((245.0 + min(38.0, 2.0 * hetero_count + 4.0 * aromatic_rings), 15.0 + 0.2 * atom_count, 0.58 * chirality))
+    if aromatic_rings > 0:
+        bands.append((290.0 + min(80.0, 12.0 * aromatic_rings), 18.0 + 0.1 * atom_count, -0.35 * chirality))
+    if conf_count > 12:
+        bands.append((330.0, 24.0, 0.20 * chirality))
+    return bands
+
+
+def simulate_cd_spectrum(
+    mol: Chem.Mol,
+    selected_confs: Sequence[ConformerResult],
+    weights: np.ndarray,
+) -> List[Tuple[float, float]]:
+    if not selected_confs:
+        return []
+    wavelength_axis = np.linspace(450.0, 180.0, 4200)
+    intensity = np.zeros_like(wavelength_axis)
+    bands = _estimate_cd_bands(mol, len(selected_confs))
+
+    weight_scale = float(np.sum(weights)) if len(weights) > 0 else 1.0
+    if weight_scale <= 0.0:
+        weight_scale = 1.0
+
+    for center, width, amplitude in bands:
+        dx = wavelength_axis - center
+        profile = np.exp(-0.5 * ((dx / max(1e-3, width)) ** 2))
+        intensity += amplitude * profile * weight_scale
+
+    max_abs = float(np.max(np.abs(intensity))) if len(intensity) else 1.0
+    if max_abs <= 0:
+        max_abs = 1.0
+    intensity /= max_abs
+    return list(zip(wavelength_axis.tolist(), intensity.tolist()))
+
+
+def _find_cd_band_extrema(data: Sequence[Tuple[float, float]], limit: int = 8) -> List[Tuple[float, float]]:
+    if len(data) < 5:
+        return []
+    x = np.array([p[0] for p in data], dtype=float)
+    y = np.array([p[1] for p in data], dtype=float)
+    extrema: List[Tuple[float, float]] = []
+    for i in range(1, len(y) - 1):
+        left = y[i - 1]
+        mid = y[i]
+        right = y[i + 1]
+        is_max = mid > left and mid >= right
+        is_min = mid < left and mid <= right
+        if is_max or is_min:
+            extrema.append((x[i], mid))
+    extrema.sort(key=lambda item: abs(item[1]), reverse=True)
+    return extrema[:limit]
+
+
 def write_spectrum_csv(path: Path, data: Sequence[Tuple[float, float]]) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(["ppm", "intensity"])
         for ppm, intensity in data:
             writer.writerow([f"{ppm:.6f}", f"{intensity:.8f}"])
+
+
+def write_cd_spectrum_csv(path: Path, data: Sequence[Tuple[float, float]]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["x", "intensity"])
+        for wavelength_nm, intensity in data:
+            writer.writerow([f"{wavelength_nm:.6f}", f"{intensity:.8f}"])
 
 
 def write_peaks_csv(path: Path, groups: Sequence[GroupPrediction], nucleus_symbol: str) -> None:
@@ -1032,6 +1184,14 @@ def write_peaks_csv(path: Path, groups: Sequence[GroupPrediction], nucleus_symbo
                     atom_text,
                 ]
             )
+
+
+def write_cd_peaks_csv(path: Path, data: Sequence[Tuple[float, float]]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["band_id", "wavelength_nm", "relative_intensity"])
+        for idx, (wavelength_nm, intensity) in enumerate(_find_cd_band_extrema(data), start=1):
+            writer.writerow([idx, f"{wavelength_nm:.4f}", f"{intensity:.5f}"])
 
 
 def write_assignments(path_json: Path, path_csv: Path, groups: Sequence[GroupPrediction], nucleus_symbol: str) -> None:
@@ -1064,6 +1224,18 @@ def write_assignments(path_json: Path, path_csv: Path, groups: Sequence[GroupPre
             )
 
 
+def write_empty_assignments(path_json: Path, path_csv: Path, label: str) -> None:
+    payload = {
+        "mapping_mode": "none",
+        "label": label,
+        "groups": [],
+    }
+    path_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    with path_csv.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["group_id", "center", "label", "atom_indices"])
+
+
 def write_spectra_manifest(
     path_csv: Path,
     rows: Sequence[Tuple[str, Path, Path, Path]],
@@ -1086,11 +1258,11 @@ def main() -> int:
     mode = str(request.get("mode", "predict")).lower()
     workflow_obj = request.get("workflow", {})
     if isinstance(workflow_obj, dict):
-        workflow_kind = str(workflow_obj.get("kind", "nmr")).strip().lower()
+        workflow_kind = str(workflow_obj.get("kind", "all")).strip().lower()
     else:
         workflow_kind = str(workflow_obj).strip().lower()
     if not workflow_kind:
-        workflow_kind = "nmr"
+        workflow_kind = "all"
     input_obj = request.get("input", {})
     settings = request.get("settings", {})
 
@@ -1115,10 +1287,10 @@ def main() -> int:
     progress_path = Path(str(request.get("progress_json", output_dir / "progress.json")))
     write_progress(progress_path, "initializing", "Starting EasyNMR workflow", 0.01)
 
-    if workflow_kind != "nmr":
+    if workflow_kind not in {"all", "nmr", "cd"}:
         message = (
             f"Unsupported workflow kind '{workflow_kind}'. "
-            "Currently available workflows: nmr."
+            "Currently available workflows: all, nmr, cd."
         )
         write_progress(progress_path, "failed", message, 1.0)
         response = {
@@ -1183,44 +1355,60 @@ def main() -> int:
         response_path.write_text(json.dumps(response, indent=2), encoding="utf-8")
         return 0
 
-    available_nuclei = nuclei_present(mol)
-    if nucleus_request == "auto":
-        target_nuclei = available_nuclei
-        if not target_nuclei:
-            write_progress(progress_path, "failed", "No supported nuclei (1H/13C/19F) found", 1.0)
-            response = {
-                "status": "failed",
-                "message": "No supported nuclei (1H/13C/19F) present in the molecule.",
-                "output_dir": str(output_dir),
-                "structure_svg": str(structure_svg),
-                "structure_atoms_csv": str(structure_atoms_csv),
-                "structure_bonds_csv": str(structure_bonds_csv),
-                "structure_xyz": str(structure_xyz) if structure_xyz is not None else "",
-                "progress_json": str(progress_path),
-                "warnings": warnings,
-            }
-            response_path.write_text(json.dumps(response, indent=2), encoding="utf-8")
-            return 0
-    else:
-        target_nuclei = [nucleus_request]
-        target_atomic_number = {"1h": 1, "13c": 6, "19f": 9}.get(nucleus_request, 1)
-        target_count = sum(1 for atom in mol.GetAtoms() if atom.GetAtomicNum() == target_atomic_number)
-        if target_count == 0:
-            label = NUCLEUS_LABEL.get(nucleus_request, nucleus_request.upper())
-            write_progress(progress_path, "failed", f"No {label} nuclei found in this molecule", 1.0)
-            response = {
-                "status": "failed",
-                "message": f"No {label} nuclei present in the molecule.",
-                "output_dir": str(output_dir),
-                "structure_svg": str(structure_svg),
-                "structure_atoms_csv": str(structure_atoms_csv),
-                "structure_bonds_csv": str(structure_bonds_csv),
-                "structure_xyz": str(structure_xyz) if structure_xyz is not None else "",
-                "progress_json": str(progress_path),
-                "warnings": warnings,
-            }
-            response_path.write_text(json.dumps(response, indent=2), encoding="utf-8")
-            return 0
+    run_nmr = workflow_kind in {"all", "nmr"}
+    run_cd = workflow_kind in {"all", "cd"}
+
+    target_nuclei: List[str] = []
+    if run_nmr:
+        available_nuclei = nuclei_present(mol)
+        if nucleus_request == "auto":
+            target_nuclei = available_nuclei
+            if not target_nuclei:
+                if workflow_kind == "nmr":
+                    write_progress(progress_path, "failed", "No supported nuclei (1H/13C/19F/31P) found", 1.0)
+                    response = {
+                        "status": "failed",
+                        "message": "No supported nuclei (1H/13C/19F/31P) present in the molecule.",
+                        "output_dir": str(output_dir),
+                        "structure_svg": str(structure_svg),
+                        "structure_atoms_csv": str(structure_atoms_csv),
+                        "structure_bonds_csv": str(structure_bonds_csv),
+                        "structure_xyz": str(structure_xyz) if structure_xyz is not None else "",
+                        "progress_json": str(progress_path),
+                        "warnings": warnings,
+                    }
+                    response_path.write_text(json.dumps(response, indent=2), encoding="utf-8")
+                    return 0
+                warnings.append(
+                    "No supported nuclei (1H/13C/19F/31P) present; skipped NMR products for workflow='all'."
+                )
+                run_nmr = False
+        else:
+            target_nuclei = [nucleus_request]
+            target_atomic_number = {"1h": 1, "13c": 6, "19f": 9, "31p": 15}.get(nucleus_request, 1)
+            target_count = sum(1 for atom in mol.GetAtoms() if atom.GetAtomicNum() == target_atomic_number)
+            if target_count == 0:
+                label = NUCLEUS_LABEL.get(nucleus_request, nucleus_request.upper())
+                if workflow_kind == "nmr":
+                    write_progress(progress_path, "failed", f"No {label} nuclei found in this molecule", 1.0)
+                    response = {
+                        "status": "failed",
+                        "message": f"No {label} nuclei present in the molecule.",
+                        "output_dir": str(output_dir),
+                        "structure_svg": str(structure_svg),
+                        "structure_atoms_csv": str(structure_atoms_csv),
+                        "structure_bonds_csv": str(structure_bonds_csv),
+                        "structure_xyz": str(structure_xyz) if structure_xyz is not None else "",
+                        "progress_json": str(progress_path),
+                        "warnings": warnings,
+                    }
+                    response_path.write_text(json.dumps(response, indent=2), encoding="utf-8")
+                    return 0
+                warnings.append(
+                    f"No {label} nuclei present; skipped NMR products for workflow='all'."
+                )
+                run_nmr = False
+                target_nuclei = []
 
     seed = hash_seed(job_id, input_value)
     write_progress(
@@ -1264,63 +1452,121 @@ def main() -> int:
     )
 
     spectra_rows: List[Tuple[str, Path, Path, Path]] = []
-    output_by_nucleus: Dict[str, Dict[str, Path]] = {}
-    total_targets = max(1, len(target_nuclei))
+    output_by_label: Dict[str, Dict[str, Path]] = {}
+    produced_products: List[str] = []
+    default_label = "CD" if run_cd and not run_nmr else "1H"
 
-    for idx, target_nucleus in enumerate(target_nuclei, start=1):
-        nucleus_label = NUCLEUS_LABEL.get(target_nucleus, target_nucleus.upper())
-        nucleus_symbol = NUCLEUS_SYMBOL.get(target_nucleus, "H")
-        frac_base = float(idx - 1) / float(total_targets)
-        frac_next = float(idx) / float(total_targets)
+    if run_nmr:
+        total_targets = max(1, len(target_nuclei))
+        nmr_progress_start = 0.80 if run_cd else 0.82
+        nmr_progress_span = 0.08 if run_cd else 0.06
+        for idx, target_nucleus in enumerate(target_nuclei, start=1):
+            nucleus_label = NUCLEUS_LABEL.get(target_nucleus, target_nucleus.upper())
+            nucleus_symbol = NUCLEUS_SYMBOL.get(target_nucleus, "H")
+            frac_base = float(idx - 1) / float(total_targets)
+            frac_next = float(idx) / float(total_targets)
 
+            write_progress(
+                progress_path,
+                "nmr_parameter_estimation",
+                (
+                    f"[{idx}/{total_targets}] Estimating {nucleus_label} shifts"
+                    " and couplings in first-order approximation"
+                ),
+                nmr_progress_start + nmr_progress_span * frac_base,
+            )
+            group_predictions = build_group_predictions(
+                mol,
+                selected_confs,
+                conf_weights,
+                frequency_mhz=frequency_mhz,
+                nucleus=target_nucleus,
+            )
+
+            write_progress(
+                progress_path,
+                "spectrum_simulation",
+                f"[{idx}/{total_targets}] Simulating {nucleus_label} spectrum",
+                nmr_progress_start + nmr_progress_span * (frac_base + frac_next) / 2.0,
+            )
+            spectrum = simulate_spectrum(group_predictions, frequency_mhz, line_shape, fwhm_hz, target_nucleus)
+
+            suffix = target_nucleus
+            spectrum_csv = output_dir / f"spectrum_{suffix}.csv"
+            peaks_csv = output_dir / f"peaks_{suffix}.csv"
+            assignments_json = output_dir / f"assignments_{suffix}.json"
+            assignments_csv = output_dir / f"assignments_{suffix}.csv"
+
+            write_spectrum_csv(spectrum_csv, spectrum)
+            write_peaks_csv(peaks_csv, group_predictions, nucleus_symbol)
+            write_assignments(assignments_json, assignments_csv, group_predictions, nucleus_symbol)
+
+            spectra_rows.append((nucleus_label, spectrum_csv, peaks_csv, assignments_csv))
+            output_by_label[nucleus_label] = {
+                "spectrum_csv": spectrum_csv,
+                "peaks_csv": peaks_csv,
+                "assignments_json": assignments_json,
+                "assignments_csv": assignments_csv,
+            }
+            produced_products.append(nucleus_label)
+        if "1H" in output_by_label:
+            default_label = "1H"
+        elif output_by_label:
+            default_label = spectra_rows[0][0]
+
+    if run_cd:
         write_progress(
             progress_path,
-            "nmr_parameter_estimation",
-            (
-                f"[{idx}/{total_targets}] Estimating {nucleus_label} shifts"
-                " and couplings in first-order approximation"
-            ),
-            0.82 + 0.06 * frac_base,
+            "cd_parameter_estimation",
+            "Estimating CD band strengths and signs from conformer ensemble",
+            0.90 if run_nmr else 0.84,
         )
-        group_predictions = build_group_predictions(
-            mol,
-            selected_confs,
-            conf_weights,
-            frequency_mhz=frequency_mhz,
-            nucleus=target_nucleus,
-        )
-
+        spectrum = simulate_cd_spectrum(mol, selected_confs, conf_weights)
         write_progress(
             progress_path,
             "spectrum_simulation",
-            f"[{idx}/{total_targets}] Simulating {nucleus_label} spectrum",
-            0.82 + 0.06 * (frac_base + frac_next) / 2.0,
+            "Simulating CD spectrum",
+            0.93 if run_nmr else 0.89,
         )
-        spectrum = simulate_spectrum(group_predictions, frequency_mhz, line_shape, fwhm_hz, target_nucleus)
 
-        suffix = target_nucleus
-        spectrum_csv = output_dir / f"spectrum_{suffix}.csv"
-        peaks_csv = output_dir / f"peaks_{suffix}.csv"
-        assignments_json = output_dir / f"assignments_{suffix}.json"
-        assignments_csv = output_dir / f"assignments_{suffix}.csv"
+        spectrum_csv = output_dir / "spectrum_cd.csv"
+        peaks_csv = output_dir / "peaks_cd.csv"
+        assignments_json = output_dir / "assignments_cd.json"
+        assignments_csv = output_dir / "assignments_cd.csv"
 
-        write_spectrum_csv(spectrum_csv, spectrum)
-        write_peaks_csv(peaks_csv, group_predictions, nucleus_symbol)
-        write_assignments(assignments_json, assignments_csv, group_predictions, nucleus_symbol)
+        write_cd_spectrum_csv(spectrum_csv, spectrum)
+        write_cd_peaks_csv(peaks_csv, spectrum)
+        write_empty_assignments(assignments_json, assignments_csv, "CD")
 
-        spectra_rows.append((nucleus_label, spectrum_csv, peaks_csv, assignments_csv))
-        output_by_nucleus[target_nucleus] = {
+        spectra_rows.append(("CD", spectrum_csv, peaks_csv, assignments_csv))
+        output_by_label["CD"] = {
             "spectrum_csv": spectrum_csv,
             "peaks_csv": peaks_csv,
             "assignments_json": assignments_json,
             "assignments_csv": assignments_csv,
         }
+        produced_products.append("CD")
+        if not run_nmr or default_label not in output_by_label:
+            default_label = "CD"
 
-    default_nucleus = "1h" if "1h" in output_by_nucleus else target_nuclei[0]
-    spectrum_csv = output_by_nucleus[default_nucleus]["spectrum_csv"]
-    peaks_csv = output_by_nucleus[default_nucleus]["peaks_csv"]
-    assignments_json = output_by_nucleus[default_nucleus]["assignments_json"]
-    assignments_csv = output_by_nucleus[default_nucleus]["assignments_csv"]
+    if not output_by_label:
+        message = "No spectra products were generated for this workflow configuration."
+        write_progress(progress_path, "failed", message, 1.0)
+        response = {
+            "status": "failed",
+            "message": message,
+            "workflow": {"kind": workflow_kind},
+            "output_dir": str(output_dir),
+            "progress_json": str(progress_path),
+            "warnings": warnings,
+        }
+        response_path.write_text(json.dumps(response, indent=2), encoding="utf-8")
+        return 0
+
+    spectrum_csv = output_by_label[default_label]["spectrum_csv"]
+    peaks_csv = output_by_label[default_label]["peaks_csv"]
+    assignments_json = output_by_label[default_label]["assignments_json"]
+    assignments_csv = output_by_label[default_label]["assignments_csv"]
     spectra_manifest_csv = output_dir / "spectra_manifest.csv"
     audit_json = output_dir / "audit.json"
 
@@ -1328,7 +1574,31 @@ def main() -> int:
     write_spectra_manifest(spectra_manifest_csv, spectra_rows)
 
     runtime_s = time.time() - start_time
-    default_nucleus_symbol = NUCLEUS_SYMBOL.get(default_nucleus, "H")
+    if workflow_kind == "cd":
+        pipeline_summary = {
+            "workflow_kind": workflow_kind,
+            "geometry": "ETKDG + xTB(opt) with MMFF fallback",
+            "simulation_mode": "ensemble CD scaffold",
+            "products": ["CD"],
+        }
+    elif workflow_kind == "nmr":
+        pipeline_summary = {
+            "workflow_kind": workflow_kind,
+            "geometry": "ETKDG + xTB(opt) with MMFF fallback",
+            "simulation_mode": "first-order",
+            "nucleus": default_label,
+            "nuclei": [NUCLEUS_LABEL.get(n, n.upper()) for n in target_nuclei],
+            "products": [NUCLEUS_LABEL.get(n, n.upper()) for n in target_nuclei],
+        }
+    else:
+        nmr_products = [label for label in produced_products if label in {"1H", "13C", "19F", "31P"}]
+        pipeline_summary = {
+            "workflow_kind": workflow_kind,
+            "geometry": "ETKDG + xTB(opt) with MMFF fallback",
+            "simulation_mode": "first-order (NMR) + ensemble CD scaffold",
+            "nuclei": nmr_products,
+            "products": produced_products,
+        }
     audit = {
         "tool": "EasyNMR",
         "backend_version": "0.2.0",
@@ -1353,13 +1623,7 @@ def main() -> int:
             "methods": [c.method for c in selected_confs],
         },
         "warnings": warnings,
-        "pipeline": {
-            "workflow_kind": workflow_kind,
-            "geometry": "ETKDG + xTB(opt) with MMFF fallback",
-            "simulation_mode": "first-order",
-            "nucleus": default_nucleus_symbol,
-            "nuclei": [NUCLEUS_LABEL.get(n, n.upper()) for n in target_nuclei],
-        },
+        "pipeline": pipeline_summary,
     }
     audit_json.write_text(json.dumps(audit, indent=2), encoding="utf-8")
     write_progress(progress_path, "done", "Prediction complete", 1.0)

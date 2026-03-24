@@ -1,0 +1,16 @@
+difficulty,case_name,workflow,smiles,computed_reference_csv,experimental_overlay_file,experimental_format_hint
+easy,ethanol_nmr,nmr,CCO,examples/computed/easy_nmr_computed.csv,examples/experimental/easy_mnova_export.txt,mnova_text_export
+medium,isobutylbenzene_nmr,nmr,CC(C)Cc1ccccc1,examples/computed/medium_nmr_computed.csv,examples/experimental/medium_bruker_export.txt,bruker_text_export
+hard,carbamate_aryl_nmr,nmr,CCOC(=O)N1CCC(CC1)C2=CC=CC=C2,examples/computed/hard_nmr_computed.csv,examples/experimental/hard_generic_export.csv,generic_text_export
+easy,easy_cd_lactic,cd,C[C@H](O)C(=O)O,examples/computed/easy_cd_computed.csv,examples/experimental/easy_cd_overlay.csv,generic_text_export
+medium,medium_cd_menthol,cd,CC[C@H]1CC[C@@H](C)C(C)C1O,examples/computed/medium_cd_computed.csv,examples/experimental/medium_cd_overlay.csv,generic_text_export
+hard,hard_cd_ephedrine,cd,CN[C@@H](C)[C@H](O)c1ccccc1,examples/computed/hard_cd_computed.csv,examples/experimental/hard_cd_overlay.csv,generic_text_export
+easy,easy_13c_ethanol,nmr,CCO,examples/computed/easy_13c_computed.csv,examples/experimental/easy_13c_overlay.csv,generic_text_export
+medium,medium_13c_isobutylbenzene,nmr,CC(C)Cc1ccccc1,examples/computed/medium_13c_computed.csv,examples/experimental/medium_13c_overlay.csv,generic_text_export
+hard,hard_13c_carbamate_aryl,nmr,CCOC(=O)N1CCC(CC1)C2=CC=CC=C2,examples/computed/hard_13c_computed.csv,examples/experimental/hard_13c_overlay.csv,generic_text_export
+easy,easy_19f_fluoroethane,nmr,CCF,examples/computed/easy_19f_computed.csv,examples/experimental/easy_19f_overlay.csv,generic_text_export
+medium,medium_19f_fluorobenzene,nmr,Fc1ccccc1,examples/computed/medium_19f_computed.csv,examples/experimental/medium_19f_overlay.csv,generic_text_export
+hard,hard_19f_trifluoroanisole,nmr,COc1ccc(C(F)(F)F)cc1,examples/computed/hard_19f_computed.csv,examples/experimental/hard_19f_overlay.csv,generic_text_export
+easy,easy_31p_trimethylphosphine_oxide,nmr,CP(=O)(C)C,examples/computed/easy_31p_computed.csv,examples/experimental/easy_31p_overlay.csv,generic_text_export
+medium,medium_31p_triethyl_phosphate,nmr,CCOP(=O)(OCC)OCC,examples/computed/medium_31p_computed.csv,examples/experimental/medium_31p_overlay.csv,generic_text_export
+hard,hard_31p_triphenylphosphine_oxide,nmr,O=P(c1ccccc1)(c1ccccc1)c1ccccc1,examples/computed/hard_31p_computed.csv,examples/experimental/hard_31p_overlay.csv,generic_text_export

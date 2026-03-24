@@ -62,6 +62,10 @@ class AppWindow : public Fl_Double_Window {
     static void on_select_atom_cb(Fl_Widget *, void *userdata);
     static void on_select_reference_cb(Fl_Widget *, void *userdata);
     static void on_select_spectrum_nucleus_cb(Fl_Widget *, void *userdata);
+    static void on_select_experimental_cb(Fl_Widget *, void *userdata);
+    static void on_load_experimental_cb(Fl_Widget *, void *userdata);
+    static void on_clear_experimental_cb(Fl_Widget *, void *userdata);
+    static void on_export_spectrum_cb(Fl_Widget *, void *userdata);
     static void on_debounced_preview_cb(void *userdata);
     static void on_worker_awake(void *userdata);
     static void on_ui_tick_cb(void *userdata);
@@ -81,6 +85,10 @@ class AppWindow : public Fl_Double_Window {
     void on_select_atom();
     void on_select_reference();
     void on_select_spectrum_nucleus();
+    void on_select_experimental();
+    void on_load_experimental();
+    void on_clear_experimental();
+    void on_export_spectrum();
     void on_peak_picked(int group_id);
     void on_structure_atom_picked(int atom_index, const std::vector<int> &attached_hydrogens);
 
@@ -92,9 +100,12 @@ class AppWindow : public Fl_Double_Window {
     void load_selected_job_visuals();
     void highlight_hydrogen_rows(const std::vector<int> &highlighted_hydrogens);
     void apply_reference_peaks(const std::string &solvent, const std::string &nucleus);
+    void refresh_experimental_choice();
+    void apply_active_experimental_overlay();
 
     ColoredInputEditor *input_box_ = nullptr;
     Fl_Input *job_name_input_ = nullptr;
+    Fl_Choice *workflow_choice_ = nullptr;
     Fl_Choice *format_choice_ = nullptr;
     Fl_Choice *solvent_choice_ = nullptr;
     Fl_Choice *nucleus_choice_ = nullptr;
@@ -114,8 +125,12 @@ class AppWindow : public Fl_Double_Window {
     Fl_Hold_Browser *peak_browser_ = nullptr;
     Fl_Hold_Browser *atom_browser_ = nullptr;
     Fl_Choice *spectrum_nucleus_choice_ = nullptr;
+    Fl_Choice *experimental_choice_ = nullptr;
     StructureWidget *structure_widget_ = nullptr;
     Fl_Choice *reference_choice_ = nullptr;
+    Fl_Button *load_experimental_button_ = nullptr;
+    Fl_Button *clear_experimental_button_ = nullptr;
+    Fl_Button *export_spectrum_button_ = nullptr;
     Fl_Box *status_box_ = nullptr;
     SpectrumWidget *spectrum_widget_ = nullptr;
 
@@ -147,6 +162,11 @@ class AppWindow : public Fl_Double_Window {
     JobConfig preview_pending_cfg_;
     std::string active_nucleus_ = "1H";
     std::map<std::string, SpectralProductFiles> active_spectral_products_;
+    std::map<std::string, std::vector<SpectrumPoint>> experimental_overlays_;
+    std::map<std::string, std::string> experimental_overlay_paths_;
+    std::map<std::string, std::string> experimental_overlay_formats_;
+    std::vector<std::string> experimental_choice_keys_;
+    std::string active_experimental_overlay_key_;
 
     std::unordered_map<int, std::vector<int>> group_to_atoms_;
     std::map<int, int> group_to_peak_row_;

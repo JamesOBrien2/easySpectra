@@ -9,7 +9,7 @@
 
 ## Data Flow
 
-1. Frontend builds `JobConfig` with a `workflow_kind` (currently `nmr`).
+1. Frontend builds `JobConfig` with a `workflow_kind` (`all`, `nmr`, `cd`; default is `all`).
 2. Core pipeline writes `request.json` to job output directory, including `workflow.kind`.
 3. Core invokes local Python backend with request/response paths.
 4. Backend writes:
@@ -26,8 +26,16 @@
 ## Product Modularity
 
 - Frontend spectrum loading uses product labels from `spectra_manifest.csv` instead of a hard-coded single-spectrum path.
-- NMR (`1H`, `13C`, `19F`) is currently the implemented product family.
-- The same manifest contract can be extended for additional spectra (for example CD) without changing the core transport layer.
+- NMR (`1H`, `13C`, `19F`, `31P`) and a first CD scaffold are currently implemented products.
+- `workflow_kind=all` runs all currently available products in one pipeline execution.
+- The same manifest contract can be extended for additional spectra without changing the core transport layer.
+
+## Experimental Overlay
+
+- GUI imports experimental spectra from 2-column text/CSV exports.
+- Current parser recognizes Bruker-like and MNova-like text exports, plus generic CSV/text.
+- Experimental traces are rendered on the same x-axis with negative y-axis orientation for direct visual comparison against computed traces.
+- Multiple experimental overlays can be loaded and switched (`Exp: none` + loaded list) without re-importing files.
 
 ## Why hybrid C++ + Python
 

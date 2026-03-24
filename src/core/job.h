@@ -47,14 +47,20 @@ inline InputFormat input_format_from_string(const std::string &value) {
 }
 
 enum class WorkflowKind {
+    All,
     Nmr,
+    Cd,
     Unknown
 };
 
 inline std::string to_string(WorkflowKind kind) {
     switch (kind) {
+    case WorkflowKind::All:
+        return "all";
     case WorkflowKind::Nmr:
         return "nmr";
+    case WorkflowKind::Cd:
+        return "cd";
     default:
         return "unknown";
     }
@@ -65,14 +71,20 @@ inline WorkflowKind workflow_kind_from_string(const std::string &value) {
     std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
+    if (lowered == "all" || lowered == "both") {
+        return WorkflowKind::All;
+    }
     if (lowered == "nmr") {
         return WorkflowKind::Nmr;
+    }
+    if (lowered == "cd" || lowered == "ecd") {
+        return WorkflowKind::Cd;
     }
     return WorkflowKind::Unknown;
 }
 
 struct JobConfig {
-    WorkflowKind workflow_kind = WorkflowKind::Nmr;
+    WorkflowKind workflow_kind = WorkflowKind::All;
     std::string job_name = "untitled";
     std::string input_value;
     InputFormat input_format = InputFormat::Smiles;

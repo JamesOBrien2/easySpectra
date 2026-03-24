@@ -2,6 +2,8 @@
 
 #include <FL/Fl.H>
 #include <FL/Fl_Box.H>
+#include <FL/Fl_Image_Surface.H>
+#include <FL/Fl_Native_File_Chooser.H>
 
 #include <algorithm>
 #include <cctype>
@@ -38,6 +40,11 @@ bool is_proton_nucleus(const std::string &nucleus);
 std::string nucleus_symbol(const std::string &nucleus);
 bool is_known_nmr_nucleus(const std::string &label);
 std::string spectrum_title_for_label(const std::string &label);
+std::string workflow_display_name(WorkflowKind kind);
+std::string make_overlay_label_from_path(const std::string &path);
+std::string make_unique_overlay_key(
+    const std::map<std::string, std::vector<SpectrumPoint>> &overlays,
+    const std::string &base_key);
 
 std::string truncate_text(const std::string &value, std::size_t max_len) {
     if (value.size() <= max_len) {
@@ -56,6 +63,104 @@ std::string shell_quote(const std::string &value) {
         escaped.push_back(c);
     }
     return "\"" + escaped + "\"";
+}
+
+bool write_ppm_rgb(
+    const std::string &path,
+    const unsigned char *rgb,
+    int width,
+    int height,
+    std::string *error_message) {
+    if (rgb == nullptr || width <= 0 || height <= 0) {
+        if (error_message != nullptr) {
+            *error_message = "Invalid image buffer for export.";
+        }
+        return false;
+    }
+
+    std::ofstream out(path, std::ios::binary);
+    if (!out) {
+        if (error_message != nullptr) {
+            *error_message = "Could not open output file for writing.";
+        }
+        return false;
+    }
+
+    out << "P6\n" << width << " " << height << "\n255\n";
+    out.write(reinterpret_cast<const char *>(rgb), static_cast<std::streamsize>(width * height * 3));
+    if (!out) {
+        if (error_message != nullptr) {
+            *error_message = "Failed while writing image data.";
+        }
+        return false;
+    }
+    return true;
+}
+
+bool export_widget_snapshot_ppm(
+    Fl_Widget *widget,
+    const std::string &output_path,
+    std::string *error_message) {
+    if (widget == nullptr || widget->w() <= 0 || widget->h() <= 0) {
+        if (error_message != nullptr) {
+            *error_message = "Spectrum widget is not ready for export.";
+        }
+        return false;
+    }
+
+    Fl_Image_Surface surface(widget->w(), widget->h());
+    Fl_Surface_Device::push_current(&surface);
+    fl_color(FL_WHITE);
+    fl_rectf(0, 0, widget->w(), widget->h());
+    surface.draw(widget, -widget->x(), -widget->y());
+    Fl_Surface_Device::pop_current();
+
+    Fl_RGB_Image *img = surface.image();
+    if (img == nullptr) {
+        if (error_message != nullptr) {
+            *error_message = "Could not capture spectrum widget image.";
+        }
+        return false;
+    }
+
+    const char *const *raw_data = img->data();
+    if (raw_data == nullptr || img->count() < 1 || raw_data[0] == nullptr) {
+        img->release();
+        if (error_message != nullptr) {
+            *error_message = "Captured image buffer is empty.";
+        }
+        return false;
+    }
+
+    const int width = img->data_w();
+    const int height = img->data_h();
+    const int depth = img->d();
+    const int line_stride = (img->ld() > 0) ? img->ld() : width * depth;
+    if (width <= 0 || height <= 0 || depth < 3 || line_stride < width * depth) {
+        img->release();
+        if (error_message != nullptr) {
+            *error_message = "Unsupported exported image format.";
+        }
+        return false;
+    }
+
+    const unsigned char *src = reinterpret_cast<const unsigned char *>(raw_data[0]);
+    std::vector<unsigned char> rgb;
+    rgb.resize(static_cast<std::size_t>(width * height * 3));
+    for (int y = 0; y < height; ++y) {
+        const unsigned char *src_row = src + static_cast<std::size_t>(y * line_stride);
+        unsigned char *dst_row = rgb.data() + static_cast<std::size_t>(y * width * 3);
+        for (int x = 0; x < width; ++x) {
+            const int src_offset = x * depth;
+            const int dst_offset = x * 3;
+            dst_row[dst_offset + 0] = src_row[src_offset + 0];
+            dst_row[dst_offset + 1] = src_row[src_offset + 1];
+            dst_row[dst_offset + 2] = src_row[src_offset + 2];
+        }
+    }
+
+    img->release();
+    return write_ppm_rgb(output_path, rgb.data(), width, height, error_message);
 }
 
 bool is_executable_file(const std::string &path) {
@@ -151,7 +256,10 @@ std::string format_label_for(const QueuedJob &job, bool active) {
         << job.id << " | "
         << truncate_text(job.config.job_name, 10) << " | "
         << to_string(job.config.input_format) << " | "
-        << job.config.nucleus;
+        << workflow_display_name(job.config.workflow_kind);
+    if (job.config.workflow_kind == WorkflowKind::Nmr) {
+        oss << ":" << job.config.nucleus;
+    }
     if (job.status == "running" && !job.message.empty()) {
         oss << " | " << truncate_text(job.message, 26);
     } else if (job.status == "failed" && !job.message.empty()) {
@@ -434,9 +542,11 @@ std::vector<ReferencePeak> reference_peaks_for_solvent(const std::string &solven
         nucleus = "13c";
     } else if (nucleus == "f19" || nucleus == "f") {
         nucleus = "19f";
+    } else if (nucleus == "p31" || nucleus == "p") {
+        nucleus = "31p";
     }
 
-    if (nucleus != "1h" && nucleus != "13c" && nucleus != "19f") {
+    if (nucleus != "1h" && nucleus != "13c" && nucleus != "19f" && nucleus != "31p") {
         return {};
     }
 
@@ -450,6 +560,8 @@ std::vector<ReferencePeak> reference_peaks_for_solvent(const std::string &solven
         }
     } else if (nucleus == "19f") {
         peaks.push_back({0.00, "CFCl3 0.00"});
+    } else if (nucleus == "31p") {
+        peaks.push_back({0.00, "H3PO4 0.00"});
     } else {
         peaks.push_back({0.00, "TMS 0.00"});
         if (solvent == "cdcl3" || solvent == "chcl3" || solvent == "chloroform") {
@@ -473,8 +585,8 @@ const std::vector<WorkflowStep> &workflow_steps() {
         {"Conformer generation", "ETKDG + MMFF pre-opt"},
         {"Conformer optimization", "xTB GFN2-xTB + ALPB (MMFF fallback)"},
         {"Boltzmann selection", "99% population / 6 kcal mol^-1 window"},
-        {"NMR parameter estimation", "Target-nucleus shifts + couplings (first-order)"},
-        {"Spectrum simulation", "Apply line shape and splitting model"},
+        {"Spectral parameter estimation", "Predict NMR or CD observables from selected conformers"},
+        {"Spectrum simulation", "Apply product-specific broadening model"},
         {"Outputs and audit", "Write spectra, assignments, metadata"},
     };
     return steps;
@@ -499,7 +611,7 @@ int workflow_stage_index(const std::string &stage_raw) {
     if (stage == "boltzmann_selection") {
         return 4;
     }
-    if (stage == "nmr_parameter_estimation") {
+    if (stage == "nmr_parameter_estimation" || stage == "cd_parameter_estimation") {
         return 5;
     }
     if (stage == "spectrum_simulation") {
@@ -529,6 +641,9 @@ std::string normalize_nucleus_label(const std::string &raw) {
     if (nucleus == "19f" || nucleus == "f19" || nucleus == "f") {
         return "19F";
     }
+    if (nucleus == "31p" || nucleus == "p31" || nucleus == "p") {
+        return "31P";
+    }
     return trim_copy(raw);
 }
 
@@ -544,6 +659,9 @@ std::string nucleus_symbol(const std::string &nucleus) {
     if (normalized == "19F") {
         return "F";
     }
+    if (normalized == "31P") {
+        return "P";
+    }
     if (normalized == "1H") {
         return "H";
     }
@@ -552,7 +670,7 @@ std::string nucleus_symbol(const std::string &nucleus) {
 
 bool is_known_nmr_nucleus(const std::string &label) {
     const std::string normalized = normalize_nucleus_label(label);
-    return normalized == "1H" || normalized == "13C" || normalized == "19F";
+    return normalized == "1H" || normalized == "13C" || normalized == "19F" || normalized == "31P";
 }
 
 std::string spectrum_title_for_label(const std::string &label) {
@@ -566,6 +684,51 @@ std::string spectrum_title_for_label(const std::string &label) {
     return "Spectrum";
 }
 
+std::string workflow_display_name(WorkflowKind kind) {
+    if (kind == WorkflowKind::All) {
+        return "ALL";
+    }
+    if (kind == WorkflowKind::Cd) {
+        return "CD";
+    }
+    return "NMR";
+}
+
+std::string make_overlay_label_from_path(const std::string &path_text) {
+    namespace fs = std::filesystem;
+    std::string label;
+    try {
+        const fs::path path(path_text);
+        label = path.stem().string();
+    } catch (...) {
+        label.clear();
+    }
+    label = trim_copy(label);
+    if (label.empty()) {
+        label = "experimental";
+    }
+    return label;
+}
+
+std::string make_unique_overlay_key(
+    const std::map<std::string, std::vector<SpectrumPoint>> &overlays,
+    const std::string &base_key) {
+    std::string candidate = trim_copy(base_key);
+    if (candidate.empty()) {
+        candidate = "experimental";
+    }
+    if (overlays.find(candidate) == overlays.end()) {
+        return candidate;
+    }
+    for (int idx = 2; idx <= 9999; ++idx) {
+        const std::string with_suffix = candidate + " (" + std::to_string(idx) + ")";
+        if (overlays.find(with_suffix) == overlays.end()) {
+            return with_suffix;
+        }
+    }
+    return candidate + " (copy)";
+}
+
 } // namespace
 
 AppWindow::AppWindow(int w, int h, const char *title)
@@ -577,7 +740,7 @@ AppWindow::AppWindow(int w, int h, const char *title)
     top_bar->color(ui(49, 58, 72));
     auto *top_accent = new Fl_Box(FL_FLAT_BOX, 0, 34, w, 2, "");
     top_accent->color(ui(154, 184, 204));
-    auto *top_title = new Fl_Box(12, 6, 420, 24, "EasyNMR  |  Local NMR Predictor");
+    auto *top_title = new Fl_Box(12, 6, 420, 24, "EasyNMR  |  Local Spectra Predictor");
     top_title->box(FL_NO_BOX);
     top_title->labelfont(FL_HELVETICA_BOLD);
     top_title->labelsize(12);
@@ -612,13 +775,28 @@ AppWindow::AppWindow(int w, int h, const char *title)
     job_name_input_->box(FL_DOWN_BOX);
     job_name_input_->color(ui(255, 255, 255));
 
-    auto *format_label = new Fl_Box(panel_x + 10, panel_y + 82, 120, 16, "Format");
+    auto *workflow_label = new Fl_Box(panel_x + 10, panel_y + 82, 100, 16, "Workflow");
+    workflow_label->box(FL_NO_BOX);
+    workflow_label->labelsize(12);
+    workflow_label->labelcolor(ui(86, 97, 112));
+    workflow_label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+
+    workflow_choice_ = new Fl_Choice(panel_x + 10, panel_y + 98, 100, 26);
+    workflow_choice_->add("all");
+    workflow_choice_->add("nmr");
+    workflow_choice_->add("cd");
+    workflow_choice_->value(0);
+    workflow_choice_->box(FL_DOWN_BOX);
+    workflow_choice_->color(ui(255, 255, 255));
+    workflow_choice_->callback(on_preview_cb, this);
+
+    auto *format_label = new Fl_Box(panel_x + 116, panel_y + 82, 96, 16, "Format");
     format_label->box(FL_NO_BOX);
     format_label->labelsize(12);
     format_label->labelcolor(ui(86, 97, 112));
     format_label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
-    format_choice_ = new Fl_Choice(panel_x + 10, panel_y + 98, 156, 26);
+    format_choice_ = new Fl_Choice(panel_x + 116, panel_y + 98, 96, 26);
     format_choice_->add("smiles");
     format_choice_->add("mol");
     format_choice_->add("sdf");
@@ -628,13 +806,13 @@ AppWindow::AppWindow(int w, int h, const char *title)
     format_choice_->color(ui(255, 255, 255));
     format_choice_->callback(on_preview_cb, this);
 
-    auto *solvent_label = new Fl_Box(panel_x + 178, panel_y + 82, 120, 16, "Solvent");
+    auto *solvent_label = new Fl_Box(panel_x + 218, panel_y + 82, 106, 16, "Solvent");
     solvent_label->box(FL_NO_BOX);
     solvent_label->labelsize(12);
     solvent_label->labelcolor(ui(86, 97, 112));
     solvent_label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
-    solvent_choice_ = new Fl_Choice(panel_x + 178, panel_y + 98, 146, 26);
+    solvent_choice_ = new Fl_Choice(panel_x + 218, panel_y + 98, 106, 26);
     solvent_choice_->add("cdcl3");
     solvent_choice_->add("dmso");
     solvent_choice_->add("h2o");
@@ -781,7 +959,72 @@ AppWindow::AppWindow(int w, int h, const char *title)
     spectrum_nucleus_choice_->value(0);
     spectrum_nucleus_choice_->callback(on_select_spectrum_nucleus_cb, this);
 
-    reference_choice_ = new Fl_Choice(right_x + right_w - 250, right_y + 6, 240, 24);
+    load_experimental_button_ = new Fl_Button(right_x + 326, right_y + 6, 84, 24, "Load Exp");
+    load_experimental_button_->callback(on_load_experimental_cb, this);
+    load_experimental_button_->box(FL_UP_BOX);
+    load_experimental_button_->color(ui(208, 221, 236));
+    load_experimental_button_->labelcolor(ui(66, 78, 95));
+    load_experimental_button_->labelsize(11);
+
+    clear_experimental_button_ = new Fl_Button(right_x + 414, right_y + 6, 84, 24, "Clear Exp");
+    clear_experimental_button_->callback(on_clear_experimental_cb, this);
+    clear_experimental_button_->box(FL_UP_BOX);
+    clear_experimental_button_->color(ui(226, 232, 241));
+    clear_experimental_button_->labelcolor(ui(87, 98, 113));
+    clear_experimental_button_->labelsize(11);
+
+    const int top_gap = 6;
+    const int toolbar_left = right_x + 504;
+    const int toolbar_right = right_x + right_w - 10;
+    const int toolbar_available = std::max(0, toolbar_right - toolbar_left);
+
+    int export_w = 78;
+    int experimental_w = 150;
+    int reference_w = 150;
+    const int min_export_w = 64;
+    const int min_experimental_w = 110;
+    const int min_reference_w = 104;
+
+    int needed = export_w + experimental_w + reference_w + (2 * top_gap);
+    if (needed > toolbar_available) {
+        int overflow = needed - toolbar_available;
+        const int ref_reduction = std::min(overflow, reference_w - min_reference_w);
+        reference_w -= ref_reduction;
+        overflow -= ref_reduction;
+
+        const int exp_reduction = std::min(overflow, experimental_w - min_experimental_w);
+        experimental_w -= exp_reduction;
+        overflow -= exp_reduction;
+
+        const int export_reduction = std::min(overflow, export_w - min_export_w);
+        export_w -= export_reduction;
+        overflow -= export_reduction;
+
+        if (overflow > 0) {
+            reference_w = std::max(min_reference_w, reference_w - overflow);
+        }
+    }
+
+    const int reference_x = toolbar_right - reference_w;
+    const int experimental_x = reference_x - top_gap - experimental_w;
+    const int export_x = experimental_x - top_gap - export_w;
+
+    export_spectrum_button_ = new Fl_Button(export_x, right_y + 6, export_w, 24, "Export");
+    export_spectrum_button_->callback(on_export_spectrum_cb, this);
+    export_spectrum_button_->box(FL_UP_BOX);
+    export_spectrum_button_->color(ui(201, 216, 234));
+    export_spectrum_button_->labelcolor(ui(60, 72, 89));
+    export_spectrum_button_->labelsize(11);
+
+    experimental_choice_ = new Fl_Choice(experimental_x, right_y + 6, experimental_w, 24);
+    experimental_choice_->box(FL_DOWN_BOX);
+    experimental_choice_->color(ui(255, 255, 255));
+    experimental_choice_->labelsize(11);
+    experimental_choice_->add("Exp: none");
+    experimental_choice_->value(0);
+    experimental_choice_->callback(on_select_experimental_cb, this);
+
+    reference_choice_ = new Fl_Choice(reference_x, right_y + 6, reference_w, 24);
     reference_choice_->box(FL_DOWN_BOX);
     reference_choice_->color(ui(255, 255, 255));
     reference_choice_->labelsize(11);
@@ -852,6 +1095,8 @@ AppWindow::AppWindow(int w, int h, const char *title)
     workflow_info_line3_->labelcolor(ui(120, 132, 149));
 
     end();
+    refresh_experimental_choice();
+    apply_active_experimental_overlay();
     Fl::add_timeout(0.2, on_ui_tick_cb, this);
     preview_current_input(false);
     refresh_workflow_browser(nullptr);
@@ -924,6 +1169,22 @@ void AppWindow::on_select_reference_cb(Fl_Widget *, void *userdata) {
 
 void AppWindow::on_select_spectrum_nucleus_cb(Fl_Widget *, void *userdata) {
     static_cast<AppWindow *>(userdata)->on_select_spectrum_nucleus();
+}
+
+void AppWindow::on_select_experimental_cb(Fl_Widget *, void *userdata) {
+    static_cast<AppWindow *>(userdata)->on_select_experimental();
+}
+
+void AppWindow::on_load_experimental_cb(Fl_Widget *, void *userdata) {
+    static_cast<AppWindow *>(userdata)->on_load_experimental();
+}
+
+void AppWindow::on_clear_experimental_cb(Fl_Widget *, void *userdata) {
+    static_cast<AppWindow *>(userdata)->on_clear_experimental();
+}
+
+void AppWindow::on_export_spectrum_cb(Fl_Widget *, void *userdata) {
+    static_cast<AppWindow *>(userdata)->on_export_spectrum();
 }
 
 void AppWindow::on_debounced_preview_cb(void *userdata) {
@@ -1005,7 +1266,12 @@ void AppWindow::queue_current_input() {
     const char *fmt = format_choice_->text(format_choice_->value());
     const char *solvent = solvent_choice_->text(solvent_choice_->value());
     const char *shape = line_shape_choice_->text(line_shape_choice_->value());
+    const char *workflow = workflow_choice_ != nullptr ? workflow_choice_->text(workflow_choice_->value()) : "all";
 
+    job.config.workflow_kind = workflow_kind_from_string(workflow ? workflow : "all");
+    if (job.config.workflow_kind == WorkflowKind::Unknown) {
+        job.config.workflow_kind = WorkflowKind::All;
+    }
     job.config.input_format = input_format_from_string(fmt ? fmt : "smiles");
     job.config.solvent = solvent ? solvent : "cdcl3";
     job.config.nucleus = "auto";
@@ -1194,7 +1460,7 @@ void AppWindow::poll_preview_async() {
         if (structure_widget_ != nullptr) {
             structure_widget_->set_structure(std::move(structure_atoms), std::move(structure_bonds));
         }
-        active_nucleus_ = normalize_nucleus_label(cfg.nucleus);
+        active_nucleus_ = (cfg.workflow_kind == WorkflowKind::Cd) ? "CD" : normalize_nucleus_label(cfg.nucleus);
         apply_reference_peaks(cfg.solvent, active_nucleus_);
         spectrum_widget_->set_nucleus_label(spectrum_title_for_label(active_nucleus_));
         if (show_status) {
@@ -1227,6 +1493,11 @@ void AppWindow::preview_current_input(bool show_status) {
 
     const char *fmt = format_choice_->text(format_choice_->value());
     const char *solvent = solvent_choice_->text(solvent_choice_->value());
+    const char *workflow = workflow_choice_ != nullptr ? workflow_choice_->text(workflow_choice_->value()) : "all";
+    cfg.workflow_kind = workflow_kind_from_string(workflow ? workflow : "all");
+    if (cfg.workflow_kind == WorkflowKind::Unknown) {
+        cfg.workflow_kind = WorkflowKind::All;
+    }
     cfg.input_format = input_format_from_string(fmt ? fmt : "smiles");
     cfg.solvent = solvent ? solvent : "cdcl3";
     cfg.nucleus = "auto";
@@ -1251,6 +1522,11 @@ void AppWindow::edit_current_structure() {
     cfg.input_value = input_box_->value();
     const char *fmt = format_choice_->text(format_choice_->value());
     const char *solvent = solvent_choice_->text(solvent_choice_->value());
+    const char *workflow = workflow_choice_ != nullptr ? workflow_choice_->text(workflow_choice_->value()) : "all";
+    cfg.workflow_kind = workflow_kind_from_string(workflow ? workflow : "all");
+    if (cfg.workflow_kind == WorkflowKind::Unknown) {
+        cfg.workflow_kind = WorkflowKind::All;
+    }
     cfg.input_format = input_format_from_string(fmt ? fmt : "smiles");
     cfg.solvent = solvent ? solvent : "cdcl3";
     cfg.nucleus = "auto";
@@ -1287,7 +1563,7 @@ void AppWindow::edit_current_structure() {
     if (structure_widget_ != nullptr) {
         structure_widget_->set_structure(std::move(structure_atoms), std::move(structure_bonds));
     }
-    active_nucleus_ = normalize_nucleus_label(cfg.nucleus);
+    active_nucleus_ = (cfg.workflow_kind == WorkflowKind::Cd) ? "CD" : normalize_nucleus_label(cfg.nucleus);
     apply_reference_peaks(cfg.solvent, active_nucleus_);
     spectrum_widget_->set_nucleus_label(spectrum_title_for_label(active_nucleus_));
 
@@ -1513,8 +1789,187 @@ void AppWindow::on_select_spectrum_nucleus() {
     apply_nucleus_visuals(job, active_nucleus_);
 }
 
+void AppWindow::on_select_experimental() {
+    if (experimental_choice_ == nullptr) {
+        return;
+    }
+    const int selected = experimental_choice_->value();
+    if (selected < 0 || selected >= static_cast<int>(experimental_choice_keys_.size())) {
+        return;
+    }
+    active_experimental_overlay_key_ = experimental_choice_keys_[static_cast<std::size_t>(selected)];
+    apply_active_experimental_overlay();
+
+    if (active_experimental_overlay_key_.empty()) {
+        status_box_->label("Experimental overlay: none");
+        return;
+    }
+
+    const auto points_it = experimental_overlays_.find(active_experimental_overlay_key_);
+    const auto format_it = experimental_overlay_formats_.find(active_experimental_overlay_key_);
+    if (points_it == experimental_overlays_.end()) {
+        status_box_->label("Experimental overlay selection unavailable");
+        return;
+    }
+
+    std::ostringstream status;
+    status << "Experimental overlay: " << active_experimental_overlay_key_
+           << " (" << points_it->second.size() << " points";
+    if (format_it != experimental_overlay_formats_.end() && !format_it->second.empty()) {
+        status << ", " << format_it->second;
+    }
+    status << ")";
+    status_box_->copy_label(status.str().c_str());
+}
+
+void AppWindow::on_load_experimental() {
+    Fl_Native_File_Chooser chooser;
+    chooser.title("Load Experimental Spectrum");
+    chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
+    chooser.filter("Text/CSV\t*.csv\nText\t*.txt\nASCII\t*.asc\nData\t*.dat\nAll\t*");
+    const int rc = chooser.show();
+    if (rc != 0) {
+        return;
+    }
+
+    const char *filename = chooser.filename();
+    if (filename == nullptr || std::string(filename).empty()) {
+        return;
+    }
+
+    const auto loaded = load_experimental_spectrum(filename);
+    if (!loaded.error_message.empty()) {
+        status_box_->copy_label(("Experimental import failed: " + loaded.error_message).c_str());
+        return;
+    }
+
+    const std::string base_label = make_overlay_label_from_path(filename);
+    const std::string overlay_key = make_unique_overlay_key(experimental_overlays_, base_label);
+    experimental_overlays_[overlay_key] = loaded.points;
+    experimental_overlay_paths_[overlay_key] = filename;
+    experimental_overlay_formats_[overlay_key] = loaded.detected_format;
+    active_experimental_overlay_key_ = overlay_key;
+    refresh_experimental_choice();
+    apply_active_experimental_overlay();
+
+    std::ostringstream status;
+    status << "Loaded experimental spectrum: " << overlay_key << " (" << loaded.points.size() << " points";
+    if (!loaded.detected_format.empty()) {
+        status << ", " << loaded.detected_format;
+    }
+    status << ")";
+    status_box_->copy_label(status.str().c_str());
+}
+
+void AppWindow::on_clear_experimental() {
+    if (experimental_overlays_.empty()) {
+        active_experimental_overlay_key_.clear();
+        refresh_experimental_choice();
+        apply_active_experimental_overlay();
+        status_box_->label("No experimental overlays loaded");
+        return;
+    }
+
+    if (active_experimental_overlay_key_.empty()) {
+        experimental_overlays_.clear();
+        experimental_overlay_paths_.clear();
+        experimental_overlay_formats_.clear();
+        refresh_experimental_choice();
+        apply_active_experimental_overlay();
+        status_box_->label("Cleared all experimental overlays");
+        return;
+    }
+
+    const std::string removed = active_experimental_overlay_key_;
+    experimental_overlays_.erase(removed);
+    experimental_overlay_paths_.erase(removed);
+    experimental_overlay_formats_.erase(removed);
+    if (!experimental_overlays_.empty()) {
+        active_experimental_overlay_key_ = experimental_overlays_.begin()->first;
+    } else {
+        active_experimental_overlay_key_.clear();
+    }
+    refresh_experimental_choice();
+    apply_active_experimental_overlay();
+    status_box_->copy_label(("Removed experimental overlay: " + removed).c_str());
+}
+
+void AppWindow::on_export_spectrum() {
+    if (spectrum_widget_ == nullptr) {
+        status_box_->label("No spectrum widget available to export");
+        return;
+    }
+
+    Fl_Native_File_Chooser chooser;
+    chooser.title("Export Spectrum Plot");
+    chooser.type(Fl_Native_File_Chooser::BROWSE_SAVE_FILE);
+    chooser.filter("PNG image\t*.png\nPPM image\t*.ppm\nAll\t*");
+    chooser.options(Fl_Native_File_Chooser::SAVEAS_CONFIRM);
+    const int rc = chooser.show();
+    if (rc != 0) {
+        return;
+    }
+
+    const char *filename = chooser.filename();
+    if (filename == nullptr || std::string(filename).empty()) {
+        return;
+    }
+
+    std::string path = filename;
+    namespace fs = std::filesystem;
+    fs::path out_path(path);
+    std::string ext = out_path.has_extension() ? out_path.extension().string() : std::string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (ext.empty()) {
+        out_path += ".png";
+        ext = ".png";
+    }
+
+    std::string error_message;
+    if (ext == ".png") {
+        const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+        fs::path tmp_ppm = fs::temp_directory_path() / ("easynmr_plot_" + std::to_string(stamp) + ".ppm");
+        if (!export_widget_snapshot_ppm(spectrum_widget_, tmp_ppm.string(), &error_message)) {
+            if (error_message.empty()) {
+                error_message = "Unknown export failure.";
+            }
+            status_box_->copy_label(("Export failed: " + error_message).c_str());
+            return;
+        }
+
+        const std::string command = "sips -s format png " + shell_quote(tmp_ppm.string()) + " --out "
+            + shell_quote(out_path.string()) + " >/dev/null 2>&1";
+        const int rc_convert = std::system(command.c_str());
+        std::error_code ec_remove;
+        fs::remove(tmp_ppm, ec_remove);
+        if (rc_convert != 0) {
+            status_box_->label("Export failed: PNG conversion unavailable; use .ppm export");
+            return;
+        }
+    } else {
+        if (!export_widget_snapshot_ppm(spectrum_widget_, out_path.string(), &error_message)) {
+            if (error_message.empty()) {
+                error_message = "Unknown export failure.";
+            }
+            status_box_->copy_label(("Export failed: " + error_message).c_str());
+            return;
+        }
+    }
+
+    status_box_->copy_label(("Exported spectrum plot: " + out_path.string()).c_str());
+}
+
 void AppWindow::on_peak_picked(int group_id) {
     if (group_id <= 0) {
+        spectrum_widget_->set_selected_groups({});
+        peak_browser_->value(0);
+        atom_browser_->value(0);
+        highlight_hydrogen_rows({});
+        if (structure_widget_ != nullptr) {
+            structure_widget_->set_selected_atom(-1);
+            structure_widget_->set_highlight_hydrogens({});
+        }
+        status_box_->label("Cleared peak highlight");
         return;
     }
 
@@ -1642,6 +2097,7 @@ void AppWindow::apply_nucleus_visuals(const QueuedJob &job, const std::string &n
         active_nucleus_ = "1H";
     }
     spectrum_widget_->set_render_settings(job.config.line_shape, job.config.fwhm_hz, job.config.frequency_mhz);
+    apply_active_experimental_overlay();
 
     SpectralProductFiles files;
     auto it = active_spectral_products_.find(active_nucleus_);
@@ -1756,6 +2212,17 @@ void AppWindow::load_selected_job_visuals() {
     if (nucleus_choice_ != nullptr && nucleus_choice_->size() > 0) {
         nucleus_choice_->value(0);
     }
+    if (workflow_choice_ != nullptr) {
+        int idx = 0;
+        for (int i = 0; i < workflow_choice_->size(); ++i) {
+            const char *label = workflow_choice_->text(i);
+            if (label != nullptr && workflow_kind_from_string(label) == job.config.workflow_kind) {
+                idx = i;
+                break;
+            }
+        }
+        workflow_choice_->value(idx);
+    }
 
     auto structure_atoms = read_structure_atoms(job.structure_atoms_csv);
     auto structure_bonds = read_structure_bonds(job.structure_bonds_csv);
@@ -1768,7 +2235,8 @@ void AppWindow::load_selected_job_visuals() {
         active_spectral_products_ = read_spectra_manifest(job.spectra_manifest_csv);
     }
     if (active_spectral_products_.empty() && !job.spectrum_csv.empty()) {
-        const std::string fallback_nucleus = normalize_nucleus_label(job.config.nucleus);
+        const std::string fallback_nucleus =
+            (job.config.workflow_kind == WorkflowKind::Cd) ? "CD" : normalize_nucleus_label(job.config.nucleus);
         SpectralProductFiles fallback;
         fallback.label = fallback_nucleus.empty() ? "1H" : fallback_nucleus;
         fallback.spectrum_csv = job.spectrum_csv;
@@ -1781,7 +2249,7 @@ void AppWindow::load_selected_job_visuals() {
         spectrum_nucleus_choice_->clear();
 
         std::vector<std::string> ordered_labels;
-        const std::vector<std::string> preferred = {"1H", "13C", "19F"};
+        const std::vector<std::string> preferred = {"1H", "13C", "19F", "31P"};
         for (const auto &label : preferred) {
             auto entry = active_spectral_products_.find(label);
             if (entry != active_spectral_products_.end() && !entry->second.spectrum_csv.empty()) {
@@ -1865,6 +2333,57 @@ void AppWindow::apply_reference_peaks(const std::string &solvent, const std::str
     reference_choice_->value(0);
 }
 
+void AppWindow::refresh_experimental_choice() {
+    if (experimental_choice_ == nullptr) {
+        return;
+    }
+
+    experimental_choice_->clear();
+    experimental_choice_keys_.clear();
+
+    experimental_choice_->add("Exp: none");
+    experimental_choice_keys_.push_back("");
+
+    for (const auto &entry : experimental_overlays_) {
+        std::string item = "Exp: " + entry.first;
+        experimental_choice_->add(item.c_str());
+        experimental_choice_keys_.push_back(entry.first);
+    }
+
+    int selected_index = 0;
+    if (!active_experimental_overlay_key_.empty()) {
+        for (int i = 1; i < static_cast<int>(experimental_choice_keys_.size()); ++i) {
+            if (experimental_choice_keys_[static_cast<std::size_t>(i)] == active_experimental_overlay_key_) {
+                selected_index = i;
+                break;
+            }
+        }
+    }
+
+    if (selected_index == 0 && !experimental_overlays_.empty() && !active_experimental_overlay_key_.empty()) {
+        active_experimental_overlay_key_.clear();
+    }
+    experimental_choice_->value(selected_index);
+    experimental_choice_->activate();
+}
+
+void AppWindow::apply_active_experimental_overlay() {
+    if (spectrum_widget_ == nullptr) {
+        return;
+    }
+    if (active_experimental_overlay_key_.empty()) {
+        spectrum_widget_->clear_experimental_points();
+        return;
+    }
+
+    const auto it = experimental_overlays_.find(active_experimental_overlay_key_);
+    if (it == experimental_overlays_.end()) {
+        spectrum_widget_->clear_experimental_points();
+        return;
+    }
+    spectrum_widget_->set_experimental_points(it->second);
+}
+
 void AppWindow::refresh_workflow_browser(const QueuedJob *job) {
     if (workflow_info_line1_ == nullptr || workflow_info_line2_ == nullptr || workflow_info_line3_ == nullptr) {
         return;
@@ -1882,7 +2401,10 @@ void AppWindow::refresh_workflow_browser(const QueuedJob *job) {
 
     std::ostringstream header;
     header << "Job " << job->id << " | " << truncate_text(job->config.job_name, 22)
-           << " | " << to_string(job->config.input_format) << " | " << job->config.nucleus;
+           << " | " << to_string(job->config.input_format) << " | " << workflow_display_name(job->config.workflow_kind);
+    if (job->config.workflow_kind == WorkflowKind::Nmr) {
+        header << ":" << job->config.nucleus;
+    }
     workflow_info_line1_->copy_label(truncate_text(header.str(), 116).c_str());
 
     std::ostringstream current;
@@ -1983,12 +2505,17 @@ void AppWindow::run_worker_loop() {
                 if (run_done_ == 0 && selected_run_index_ < jobs_.size() && jobs_[selected_run_index_].status == "pending") {
                     next_index = selected_run_index_;
                     jobs_[next_index].status = "running";
-                    const std::string nucleus_mode = (normalize_nucleus_label(jobs_[next_index].config.nucleus) == "1H"
-                                                      && jobs_[next_index].config.nucleus != "auto")
-                                                         ? "1H model"
-                                                         : "multi-nucleus (1H/13C/19F as present)";
-                    jobs_[next_index].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> "
-                                              + nucleus_mode;
+                    if (jobs_[next_index].config.workflow_kind == WorkflowKind::Cd) {
+                        jobs_[next_index].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> CD bands";
+                    } else if (jobs_[next_index].config.workflow_kind == WorkflowKind::All) {
+                        jobs_[next_index].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> NMR + CD products";
+                    } else {
+                        const std::string nucleus_mode = (normalize_nucleus_label(jobs_[next_index].config.nucleus) == "1H"
+                                                          && jobs_[next_index].config.nucleus != "auto")
+                                                             ? "1H model"
+                                                             : "multi-nucleus (1H/13C/19F/31P as present)";
+                        jobs_[next_index].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> " + nucleus_mode;
+                    }
                     jobs_[next_index].progress_stage = "launch";
                     jobs_[next_index].progress_message = "Launching backend process";
                     jobs_[next_index].progress_fraction = 0.0;
@@ -1998,12 +2525,17 @@ void AppWindow::run_worker_loop() {
                     if (jobs_[i].status == "pending") {
                         next_index = i;
                         jobs_[i].status = "running";
-                        const std::string nucleus_mode = (normalize_nucleus_label(jobs_[i].config.nucleus) == "1H"
-                                                          && jobs_[i].config.nucleus != "auto")
-                                                             ? "1H model"
-                                                             : "multi-nucleus (1H/13C/19F as present)";
-                        jobs_[i].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> "
-                                         + nucleus_mode;
+                        if (jobs_[i].config.workflow_kind == WorkflowKind::Cd) {
+                            jobs_[i].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> CD bands";
+                        } else if (jobs_[i].config.workflow_kind == WorkflowKind::All) {
+                            jobs_[i].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> NMR + CD products";
+                        } else {
+                            const std::string nucleus_mode = (normalize_nucleus_label(jobs_[i].config.nucleus) == "1H"
+                                                              && jobs_[i].config.nucleus != "auto")
+                                                                 ? "1H model"
+                                                                 : "multi-nucleus (1H/13C/19F/31P as present)";
+                            jobs_[i].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> " + nucleus_mode;
+                        }
                         jobs_[i].progress_stage = "launch";
                         jobs_[i].progress_message = "Launching backend process";
                         jobs_[i].progress_fraction = 0.0;

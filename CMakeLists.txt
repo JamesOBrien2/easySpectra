@@ -29,6 +29,9 @@ target_compile_definitions(easynmr_core
 add_executable(easynmr src/cli/main.cpp)
 target_link_libraries(easynmr PRIVATE easynmr_core)
 
+add_executable(easynmr-expcheck src/cli/experimental_check.cpp)
+target_link_libraries(easynmr-expcheck PRIVATE easynmr_core)
+
 if(EASYNMR_BUILD_GUI)
     find_package(FLTK QUIET)
     if(FLTK_FOUND)
