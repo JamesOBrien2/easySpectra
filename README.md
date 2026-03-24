@@ -3,12 +3,15 @@
 EasyNMR is a local-first desktop + CLI tool for fast, explainable NMR prediction from
 SMILES or structure files.
 
+Current pre-release:
+- `0.0.1-alpha.0`
+
 Current scaffold includes:
 - C++17 core with JSON bridge to local Python backend
 - `easynmr` CLI runner
 - `easynmr-gui` FLTK prototype (when FLTK is available)
-- RDKit + xTB fast-path backend with conformer generation, Boltzmann filtering, and first-order 1H simulation
-- Export-ready artifact layout (`spectrum.csv`, `peaks.csv`, `assignments.json`, `audit.json`)
+- RDKit + xTB fast-path backend with conformer generation, Boltzmann filtering, and first-order `1H`/`13C`/`19F` simulation
+- Export-ready artifact layout (`spectrum_*.csv`, `peaks_*.csv`, `assignments_*.json`, `spectra_manifest.csv`, `audit.json`)
 - 2D structure preview (`structure.svg`) and interactive peak-group to atom assignment linking in GUI
 
 ## Build
