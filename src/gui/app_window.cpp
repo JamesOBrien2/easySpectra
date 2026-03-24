@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -824,6 +825,11 @@ AppWindow::~AppWindow() {
     cancel_requested_ = true;
     Fl::remove_timeout(on_debounced_preview_cb, this);
     Fl::remove_timeout(on_ui_tick_cb, this);
+    if (preview_future_active_ && preview_future_.valid()) {
+        preview_future_.wait();
+        (void)preview_future_.get();
+        preview_future_active_ = false;
+    }
     if (worker_thread_.joinable()) {
         worker_thread_.join();
     }
@@ -914,6 +920,7 @@ void AppWindow::on_worker_awake(void *userdata) {
 
 void AppWindow::on_ui_tick_cb(void *userdata) {
     auto *self = static_cast<AppWindow *>(userdata);
+    self->poll_preview_async();
     bool has_running_work = self->worker_running_.load();
     if (!has_running_work) {
         std::lock_guard<std::mutex> lock(self->jobs_mutex_);
@@ -1087,6 +1094,66 @@ void AppWindow::schedule_preview(double delay_seconds, bool show_status) {
     Fl::add_timeout(delay_seconds, on_debounced_preview_cb, this);
 }
 
+void AppWindow::launch_preview_async(const JobConfig &cfg, bool show_status) {
+    if (preview_future_active_) {
+        preview_pending_cfg_ = cfg;
+        preview_pending_ = true;
+        preview_pending_show_status_ = preview_pending_show_status_ || show_status;
+        if (show_status) {
+            status_box_->label("Preview queued...");
+        }
+        return;
+    }
+
+    preview_inflight_cfg_ = cfg;
+    preview_inflight_show_status_ = show_status;
+    preview_future_ = std::async(std::launch::async, [this, cfg]() { return pipeline_.preview(cfg); });
+    preview_future_active_ = true;
+    if (show_status) {
+        status_box_->label("Rendering preview...");
+    }
+}
+
+void AppWindow::poll_preview_async() {
+    if (!preview_future_active_ || !preview_future_.valid()) {
+        return;
+    }
+    if (preview_future_.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+        return;
+    }
+
+    const JobOutputs preview = preview_future_.get();
+    const JobConfig cfg = preview_inflight_cfg_;
+    const bool show_status = preview_inflight_show_status_;
+    preview_future_active_ = false;
+
+    if (preview.status != "ok") {
+        if (show_status) {
+            status_box_->copy_label(("Preview unavailable: " + preview.message).c_str());
+        }
+    } else {
+        auto structure_atoms = read_structure_atoms(preview.structure_atoms_csv);
+        auto structure_bonds = read_structure_bonds(preview.structure_bonds_csv);
+        if (structure_widget_ != nullptr) {
+            structure_widget_->set_structure(std::move(structure_atoms), std::move(structure_bonds));
+        }
+        active_nucleus_ = normalize_nucleus_label(cfg.nucleus);
+        apply_reference_peaks(cfg.solvent, active_nucleus_);
+        spectrum_widget_->set_nucleus_label(active_nucleus_ + " NMR Spectrum");
+        if (show_status) {
+            status_box_->label("Preview updated from current input");
+        }
+    }
+
+    if (preview_pending_) {
+        const JobConfig pending_cfg = preview_pending_cfg_;
+        const bool pending_show_status = preview_pending_show_status_;
+        preview_pending_ = false;
+        preview_pending_show_status_ = false;
+        launch_preview_async(pending_cfg, pending_show_status);
+    }
+}
+
 void AppWindow::preview_current_input(bool show_status) {
     if (worker_running_) {
         if (show_status) {
@@ -1104,31 +1171,12 @@ void AppWindow::preview_current_input(bool show_status) {
     cfg.input_format = input_format_from_string(fmt ? fmt : "smiles");
     cfg.solvent = solvent ? solvent : "cdcl3";
     cfg.nucleus = "auto";
+    cfg.need_editable_xyz = false;
 
     if (cfg.input_value.empty() || cfg.input_format == InputFormat::Unknown) {
         return;
     }
-
-    const JobOutputs preview = pipeline_.preview(cfg);
-    if (preview.status != "ok") {
-        if (show_status) {
-            status_box_->copy_label(("Preview unavailable: " + preview.message).c_str());
-        }
-        return;
-    }
-
-    auto structure_atoms = read_structure_atoms(preview.structure_atoms_csv);
-    auto structure_bonds = read_structure_bonds(preview.structure_bonds_csv);
-    if (structure_widget_ != nullptr) {
-        structure_widget_->set_structure(std::move(structure_atoms), std::move(structure_bonds));
-    }
-    active_nucleus_ = normalize_nucleus_label(cfg.nucleus);
-    apply_reference_peaks(cfg.solvent, active_nucleus_);
-    spectrum_widget_->set_nucleus_label(active_nucleus_ + " NMR Spectrum");
-
-    if (show_status) {
-        status_box_->label("Preview updated from current input");
-    }
+    launch_preview_async(cfg, show_status);
 }
 
 void AppWindow::edit_current_structure() {
@@ -1145,6 +1193,7 @@ void AppWindow::edit_current_structure() {
     cfg.input_format = input_format_from_string(fmt ? fmt : "smiles");
     cfg.solvent = solvent ? solvent : "cdcl3";
     cfg.nucleus = "auto";
+    cfg.need_editable_xyz = true;
 
     if (cfg.input_value.empty() || cfg.input_format == InputFormat::Unknown) {
         status_box_->label("Cannot open editor: invalid or empty input");

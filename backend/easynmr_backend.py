@@ -129,6 +129,20 @@ def parse_float(text: str) -> Optional[float]:
         return None
 
 
+def parse_bool(value: object, fallback: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "no", "n", "off"}:
+            return False
+    return fallback
+
+
 def normalize_nucleus(text: str) -> str:
     return NUCLEUS_ALIASES.get(text.strip().lower(), "1h")
 
@@ -190,11 +204,6 @@ def write_editable_xyz(mol: Chem.Mol, path: Path, warnings: List[str]) -> None:
                 warnings.append("3D embedding failed for editor export; wrote 2D XYZ fallback.")
             except Exception:
                 raise ValueError("Could not generate coordinates for editable XYZ export.")
-        else:
-            try:
-                AllChem.MMFFOptimizeMolecule(editable, confId=conf_id, maxIters=120)
-            except Exception:
-                warnings.append("MMFF optimization failed for editor export; using embedded ETKDG geometry.")
     else:
         conf_id = editable.GetConformer().GetId()
 
@@ -1014,6 +1023,7 @@ def main() -> int:
     boltzmann_cutoff = float(settings.get("boltzmann_cutoff", 0.99))
     energy_window_kcal = float(settings.get("energy_window_kcal", 6.0))
     nucleus_request = normalize_nucleus(str(settings.get("nucleus", "auto")))
+    need_editable_xyz = parse_bool(settings.get("need_editable_xyz", mode != "preview"), mode != "preview")
 
     solvent_input = str(settings.get("solvent", "cdcl3")).lower()
     solvent = SOLVENT_ALIASES.get(solvent_input, solvent_input)
@@ -1044,17 +1054,19 @@ def main() -> int:
     structure_svg = output_dir / "structure.svg"
     structure_atoms_csv = output_dir / "structure_atoms.csv"
     structure_bonds_csv = output_dir / "structure_bonds.csv"
-    structure_xyz = output_dir / "structure_edit.xyz"
+    structure_xyz: Optional[Path] = None
     write_progress(progress_path, "structure_2d", "Generating 2D depiction and atom mapping", 0.14)
     try:
         write_structure_svg(mol, structure_svg)
         write_structure_geometry_csv(mol, structure_atoms_csv, structure_bonds_csv)
     except Exception:
         warnings.append("Could not generate 2D structure visualization files.")
-    try:
-        write_editable_xyz(mol, structure_xyz, warnings)
-    except Exception:
-        warnings.append("Could not generate editable XYZ export for structure editor.")
+    if need_editable_xyz:
+        structure_xyz = output_dir / "structure_edit.xyz"
+        try:
+            write_editable_xyz(mol, structure_xyz, warnings)
+        except Exception:
+            warnings.append("Could not generate editable XYZ export for structure editor.")
 
     if mode == "preview":
         write_progress(progress_path, "done", "Preview complete", 1.0)
@@ -1065,7 +1077,7 @@ def main() -> int:
             "structure_svg": str(structure_svg),
             "structure_atoms_csv": str(structure_atoms_csv),
             "structure_bonds_csv": str(structure_bonds_csv),
-            "structure_xyz": str(structure_xyz),
+            "structure_xyz": str(structure_xyz) if structure_xyz is not None else "",
             "progress_json": str(progress_path),
             "warnings": warnings,
         }
@@ -1084,7 +1096,7 @@ def main() -> int:
                 "structure_svg": str(structure_svg),
                 "structure_atoms_csv": str(structure_atoms_csv),
                 "structure_bonds_csv": str(structure_bonds_csv),
-                "structure_xyz": str(structure_xyz),
+                "structure_xyz": str(structure_xyz) if structure_xyz is not None else "",
                 "progress_json": str(progress_path),
                 "warnings": warnings,
             }
@@ -1104,7 +1116,7 @@ def main() -> int:
                 "structure_svg": str(structure_svg),
                 "structure_atoms_csv": str(structure_atoms_csv),
                 "structure_bonds_csv": str(structure_bonds_csv),
-                "structure_xyz": str(structure_xyz),
+                "structure_xyz": str(structure_xyz) if structure_xyz is not None else "",
                 "progress_json": str(progress_path),
                 "warnings": warnings,
             }
@@ -1264,7 +1276,7 @@ def main() -> int:
         "structure_svg": str(structure_svg),
         "structure_atoms_csv": str(structure_atoms_csv),
         "structure_bonds_csv": str(structure_bonds_csv),
-        "structure_xyz": str(structure_xyz),
+        "structure_xyz": str(structure_xyz) if structure_xyz is not None else "",
         "progress_json": str(progress_path),
         "warnings": warnings,
     }

@@ -15,6 +15,7 @@
 #include <FL/Fl_Multiline_Input.H>
 
 #include <atomic>
+#include <future>
 #include <map>
 #include <mutex>
 #include <thread>
@@ -78,6 +79,8 @@ class AppWindow : public Fl_Double_Window {
     void schedule_preview(double delay_seconds, bool show_status);
     void edit_current_structure();
     void request_preview_for_job_index(std::size_t index, bool load_visuals_if_selected);
+    void launch_preview_async(const JobConfig &cfg, bool show_status);
+    void poll_preview_async();
     void on_select_job();
     void on_select_peak();
     void on_select_atom();
@@ -136,6 +139,13 @@ class AppWindow : public Fl_Double_Window {
     int run_done_ = 0;
     bool preview_debounce_pending_ = false;
     bool preview_debounce_show_status_ = false;
+    bool preview_future_active_ = false;
+    bool preview_pending_ = false;
+    bool preview_pending_show_status_ = false;
+    std::future<JobOutputs> preview_future_;
+    JobConfig preview_inflight_cfg_;
+    bool preview_inflight_show_status_ = false;
+    JobConfig preview_pending_cfg_;
     std::string active_nucleus_ = "1H";
     std::map<std::string, NucleusResultFiles> active_nucleus_results_;
 

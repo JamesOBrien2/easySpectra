@@ -59,6 +59,7 @@ struct JobConfig {
     double energy_window_kcal = 6.0;
     std::string line_shape = "lorentzian";
     double fwhm_hz = 1.0;
+    bool need_editable_xyz = false;
     std::string output_root = "output";
     std::string python_executable = EASYNMR_DEFAULT_PYTHON;
     std::string backend_script = EASYNMR_BACKEND_SCRIPT;
