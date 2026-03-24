@@ -83,56 +83,39 @@ Outputs are written to `output/<job-id>/`.
 
 ## Comparing Computed vs Experimental
 
-### Supported experimental inputs
-
+Supported experimental inputs:
 - Bruker-like exported text
 - MNova-like exported text
 - Generic 2-column text/CSV (`x, y`)
 
-### Current limits
-
+Current limits:
 - Bruker raw acquisition folders are not parsed directly yet.
 - MNova project files (`.mnova`, `.mnv`) are not parsed directly yet.
 - Export vendor data to 2-column text/CSV first, then load it.
 
-### Validate a file before loading
+In the GUI, experimental overlays are drawn on the same x-axis with negative y-values for direct comparison against computed traces.
+
+If an import ever fails and you want a quick parser check:
 
 ```bash
 ./build/easynmr-expcheck <experimental-spectrum-file>
 ```
 
-In the GUI, experimental overlays are drawn on the same x-axis with negative y-values for easy visual comparison against computed traces.
+## Benchmarks, Examples, and Coverage
 
-## Easy/Medium/Hard Test Packs
+The bundled computed/experimental files are included to document broad testing coverage across workflows (`nmr`, `cd`) and nuclei (`1H`, `13C`, `19F`, `31P`) with easy/medium/hard cases.
 
-### Main case maps (includes SMILES)
-
+Main mapping files (including SMILES and computed/experimental pairings):
 - `examples/benchmark_cases.csv`
 - `tests/spectra_comparison_cases.csv`
 
-### Comparison table (SMILES + computed vs experimental)
+Bundled data locations:
+- `examples/computed/`
+- `examples/experimental/`
+- `examples/external_nmr_pack/`
+- `examples/figures/`
 
-Use `tests/spectra_comparison_cases.csv` as the main table when you want direct one-line mapping for each test case.
-
-Key columns:
-- `smiles`
-- `workflow`
-- `target_product`
-- `computed_reference_csv`
-- `experimental_overlay_file`
-
-### Bundled examples
-
-- `examples/computed/` for computed sample outputs
-- `examples/experimental/` for experimental and converted overlays
-- `examples/external_nmr_pack/` for curated vendor-style source files and provenance
-- `examples/figures/` for optional visual comparison figures
-
-### Visual examples (figures)
-
-Store figures in `examples/figures/` and link/embed them here.
-
-Featured figures:
+### Example figures
 
 ![easySpectra GUI overview](examples/figures/easy_1H_nmr_comparison_highlighted_full_GUI.png)
 
@@ -140,32 +123,13 @@ Featured figures:
 
 ![easy 1H computed vs experimental comparison](examples/figures/easy_1H_nmr_comparison.png)
 
-*Figure 2. Easy 1H computed vs experimental overlay comparison export.*
+*Figure 2. Easy 1H computed vs experimental overlay export.*
 
-Suggested gallery table:
+### Project check scripts
 
-| Case | Workflow/Product | SMILES | Figure |
-|---|---|---|---|
-| easy_1h_gui | NMR `1H` | `CCO` | ![easy 1H GUI](examples/figures/easy_1H_nmr_comparison_highlighted_full_GUI.png) |
-| easy_1h_export | NMR `1H` | `CCO` | ![easy 1H export](examples/figures/easy_1H_nmr_comparison.png) |
-
-### Run the smoke checks
-
-```bash
-./scripts/smoke_products_and_experimental.sh
-```
-
-### Run the full comparison matrix
-
-```bash
-./tests/run_spectra_comparison_matrix.sh
-```
-
-### Regenerate the bundled example pack
-
-```bash
-./scripts/generate_example_pack.py
-```
+- `./scripts/smoke_products_and_experimental.sh` builds the project and runs a quick end-to-end smoke check across key workflows and overlay parsing.
+- `./tests/run_spectra_comparison_matrix.sh` runs the full easy/medium/hard case matrix from the mapping table.
+- `./scripts/generate_example_pack.py` regenerates the bundled computed and overlay example set from the current workflow behavior.
 
 ## Where Important Output Files Live
 

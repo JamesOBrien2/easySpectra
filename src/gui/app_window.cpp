@@ -97,6 +97,76 @@ bool write_ppm_rgb(
     return true;
 }
 
+void trim_white_border(
+    std::vector<unsigned char> *rgb,
+    int *width,
+    int *height) {
+    if (rgb == nullptr || width == nullptr || height == nullptr) {
+        return;
+    }
+    if (*width <= 0 || *height <= 0) {
+        return;
+    }
+    const int src_w = *width;
+    const int src_h = *height;
+    if (static_cast<int>(rgb->size()) < src_w * src_h * 3) {
+        return;
+    }
+
+    auto is_background = [&](int x, int y) {
+        const std::size_t idx = static_cast<std::size_t>((y * src_w + x) * 3);
+        const unsigned char r = (*rgb)[idx + 0];
+        const unsigned char g = (*rgb)[idx + 1];
+        const unsigned char b = (*rgb)[idx + 2];
+        // Only treat near-pure white as padding so we keep the light plot colors.
+        return r >= 254 && g >= 254 && b >= 254;
+    };
+
+    int min_x = src_w;
+    int min_y = src_h;
+    int max_x = -1;
+    int max_y = -1;
+    for (int y = 0; y < src_h; ++y) {
+        for (int x = 0; x < src_w; ++x) {
+            if (is_background(x, y)) {
+                continue;
+            }
+            min_x = std::min(min_x, x);
+            min_y = std::min(min_y, y);
+            max_x = std::max(max_x, x);
+            max_y = std::max(max_y, y);
+        }
+    }
+
+    if (max_x < min_x || max_y < min_y) {
+        return;
+    }
+
+    const int kPad = 2;
+    min_x = std::max(0, min_x - kPad);
+    min_y = std::max(0, min_y - kPad);
+    max_x = std::min(src_w - 1, max_x + kPad);
+    max_y = std::min(src_h - 1, max_y + kPad);
+
+    const int dst_w = max_x - min_x + 1;
+    const int dst_h = max_y - min_y + 1;
+    if (dst_w >= src_w && dst_h >= src_h) {
+        return;
+    }
+
+    std::vector<unsigned char> cropped;
+    cropped.resize(static_cast<std::size_t>(dst_w * dst_h * 3));
+    for (int y = 0; y < dst_h; ++y) {
+        const unsigned char *src_row = rgb->data() + static_cast<std::size_t>(((y + min_y) * src_w + min_x) * 3);
+        unsigned char *dst_row = cropped.data() + static_cast<std::size_t>(y * dst_w * 3);
+        std::copy(src_row, src_row + static_cast<std::size_t>(dst_w * 3), dst_row);
+    }
+
+    *rgb = std::move(cropped);
+    *width = dst_w;
+    *height = dst_h;
+}
+
 bool export_widget_snapshot_ppm(
     Fl_Widget *widget,
     const std::string &output_path,
@@ -160,7 +230,10 @@ bool export_widget_snapshot_ppm(
     }
 
     img->release();
-    return write_ppm_rgb(output_path, rgb.data(), width, height, error_message);
+    int out_w = width;
+    int out_h = height;
+    trim_white_border(&rgb, &out_w, &out_h);
+    return write_ppm_rgb(output_path, rgb.data(), out_w, out_h, error_message);
 }
 
 bool is_executable_file(const std::string &path) {
@@ -827,26 +900,13 @@ AppWindow::AppWindow(int w, int h, const char *title)
     line_shape_label->labelcolor(ui(86, 97, 112));
     line_shape_label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
-    line_shape_choice_ = new Fl_Choice(panel_x + 10, panel_y + 144, 156, 26);
+    line_shape_choice_ = new Fl_Choice(panel_x + 10, panel_y + 144, panel_w - 20, 26);
     line_shape_choice_->add("lorentzian");
     line_shape_choice_->add("gaussian");
     line_shape_choice_->add("voigt");
     line_shape_choice_->value(0);
     line_shape_choice_->box(FL_DOWN_BOX);
     line_shape_choice_->color(ui(255, 255, 255));
-
-    auto *nucleus_label = new Fl_Box(panel_x + 178, panel_y + 128, 120, 16, "Nucleus");
-    nucleus_label->box(FL_NO_BOX);
-    nucleus_label->labelsize(12);
-    nucleus_label->labelcolor(ui(86, 97, 112));
-    nucleus_label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-
-    nucleus_choice_ = new Fl_Choice(panel_x + 178, panel_y + 144, 146, 26);
-    nucleus_choice_->add("auto (all present)");
-    nucleus_choice_->value(0);
-    nucleus_choice_->box(FL_DOWN_BOX);
-    nucleus_choice_->color(ui(255, 255, 255));
-    nucleus_choice_->deactivate();
 
     auto *input_label = new Fl_Box(panel_x + 10, panel_y + 176, panel_w - 20, 16, "SMILES / structure text");
     input_label->box(FL_NO_BOX);
@@ -2209,9 +2269,6 @@ void AppWindow::load_selected_job_visuals() {
         job = jobs_[index];
     }
 
-    if (nucleus_choice_ != nullptr && nucleus_choice_->size() > 0) {
-        nucleus_choice_->value(0);
-    }
     if (workflow_choice_ != nullptr) {
         int idx = 0;
         for (int i = 0; i < workflow_choice_->size(); ++i) {

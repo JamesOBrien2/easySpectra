@@ -108,7 +108,6 @@ class AppWindow : public Fl_Double_Window {
     Fl_Choice *workflow_choice_ = nullptr;
     Fl_Choice *format_choice_ = nullptr;
     Fl_Choice *solvent_choice_ = nullptr;
-    Fl_Choice *nucleus_choice_ = nullptr;
     Fl_Choice *line_shape_choice_ = nullptr;
     Fl_Button *preview_button_ = nullptr;
     Fl_Button *edit_button_ = nullptr;
