@@ -110,8 +110,11 @@ class AppWindow : public Fl_Double_Window {
     Fl_Button *cancel_button_ = nullptr;
     Fl_Button *run_selected_button_ = nullptr;
     Fl_Hold_Browser *queue_browser_ = nullptr;
-    Fl_Hold_Browser *workflow_browser_ = nullptr;
     WorkflowProgressWidget *workflow_progress_widget_ = nullptr;
+    Fl_Box *workflow_info_bg_ = nullptr;
+    Fl_Box *workflow_info_line1_ = nullptr;
+    Fl_Box *workflow_info_line2_ = nullptr;
+    Fl_Box *workflow_info_line3_ = nullptr;
     Fl_Hold_Browser *peak_browser_ = nullptr;
     Fl_Hold_Browser *atom_browser_ = nullptr;
     Fl_Choice *spectrum_nucleus_choice_ = nullptr;

@@ -809,11 +809,27 @@ AppWindow::AppWindow(int w, int h, const char *title)
         workflow_progress_widget_->set_progress_state(-1, -1, false, false, false, 0.0, "Workflow idle");
     }
 
-    workflow_browser_ = new Fl_Hold_Browser(right_x, right_y + spectrum_h + 180, right_w, 52);
-    workflow_browser_->box(FL_DOWN_BOX);
-    workflow_browser_->color(ui(255, 255, 255));
-    workflow_browser_->textsize(11);
-    workflow_browser_->selection_color(ui(255, 255, 255));
+    workflow_info_bg_ = new Fl_Box(FL_DOWN_BOX, right_x, right_y + spectrum_h + 180, right_w, 52, "");
+    workflow_info_bg_->color(ui(255, 255, 255));
+
+    workflow_info_line1_ = new Fl_Box(right_x + 8, right_y + spectrum_h + 182, right_w - 16, 16, "");
+    workflow_info_line1_->box(FL_NO_BOX);
+    workflow_info_line1_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    workflow_info_line1_->labelsize(12);
+    workflow_info_line1_->labelfont(FL_HELVETICA_BOLD);
+    workflow_info_line1_->labelcolor(ui(84, 95, 112));
+
+    workflow_info_line2_ = new Fl_Box(right_x + 8, right_y + spectrum_h + 198, right_w - 16, 16, "");
+    workflow_info_line2_->box(FL_NO_BOX);
+    workflow_info_line2_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    workflow_info_line2_->labelsize(12);
+    workflow_info_line2_->labelcolor(ui(98, 110, 128));
+
+    workflow_info_line3_ = new Fl_Box(right_x + 8, right_y + spectrum_h + 214, right_w - 16, 16, "");
+    workflow_info_line3_->box(FL_NO_BOX);
+    workflow_info_line3_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    workflow_info_line3_->labelsize(11);
+    workflow_info_line3_->labelcolor(ui(120, 132, 149));
 
     end();
     Fl::add_timeout(0.2, on_ui_tick_cb, this);
@@ -1797,39 +1813,38 @@ void AppWindow::apply_reference_peaks(const std::string &solvent, const std::str
 }
 
 void AppWindow::refresh_workflow_browser(const QueuedJob *job) {
-    if (workflow_browser_ == nullptr) {
+    if (workflow_info_line1_ == nullptr || workflow_info_line2_ == nullptr || workflow_info_line3_ == nullptr) {
         return;
     }
-
-    workflow_browser_->clear();
 
     if (job == nullptr) {
         if (workflow_progress_widget_ != nullptr) {
             workflow_progress_widget_->set_progress_state(-1, -1, false, false, false, 0.0, "Workflow idle");
         }
-        workflow_browser_->add("No active job");
-        workflow_browser_->add("Queue a job, then click Run Pending / Run Selected.");
+        workflow_info_line1_->copy_label("No active job");
+        workflow_info_line2_->copy_label("Queue a job, then click Run Pending / Run Selected.");
+        workflow_info_line3_->copy_label("Workflow details will appear here while calculations are running.");
         return;
     }
 
     std::ostringstream header;
     header << "Job " << job->id << " | " << truncate_text(job->config.job_name, 22)
            << " | " << to_string(job->config.input_format) << " | " << job->config.nucleus;
-    workflow_browser_->add(header.str().c_str());
+    workflow_info_line1_->copy_label(truncate_text(header.str(), 116).c_str());
 
     std::ostringstream current;
     if (!job->progress_message.empty()) {
-        current << "Current: " << truncate_text(job->progress_message, 92);
+        current << "Current: " << truncate_text(job->progress_message, 108);
     } else if (job->status == "done") {
         current << "Current: Prediction complete";
     } else if (job->status == "failed") {
-        current << "Current: Failed - " << truncate_text(job->message, 72);
+        current << "Current: Failed - " << truncate_text(job->message, 88);
     } else if (job->status == "running") {
         current << "Current: Running...";
     } else {
         current << "Current: Waiting to run";
     }
-    workflow_browser_->add(current.str().c_str());
+    workflow_info_line2_->copy_label(current.str().c_str());
 
     const auto &steps = workflow_steps();
     int active_idx = workflow_stage_index(job->progress_stage);
@@ -1881,35 +1896,23 @@ void AppWindow::refresh_workflow_browser(const QueuedJob *job) {
         }
     }
 
-    for (std::size_t i = 0; i < steps.size(); ++i) {
-        std::string icon = "[ ]";
-        if (job->status == "done") {
-            icon = "[x]";
-        } else if (job->status == "failed") {
-            if (active_idx >= 0 && static_cast<int>(i) < active_idx) {
-                icon = "[x]";
-            } else if (active_idx >= 0 && static_cast<int>(i) == active_idx) {
-                icon = "[!]";
-            }
-        } else if (job->status == "running") {
-            if (active_idx >= 0 && static_cast<int>(i) < active_idx) {
-                icon = "[x]";
-            } else if (active_idx >= 0 && static_cast<int>(i) == active_idx) {
-                icon = "[>]";
-            }
-        }
-
-        std::ostringstream line;
-        line << icon << " " << steps[i].label << " - " << steps[i].method;
-        workflow_browser_->add(line.str().c_str());
+    std::ostringstream detail;
+    if (active_idx >= 0 && active_idx < static_cast<int>(steps.size())) {
+        detail << "Step " << (active_idx + 1) << "/" << steps.size()
+               << ": " << steps[static_cast<std::size_t>(active_idx)].label
+               << " | " << steps[static_cast<std::size_t>(active_idx)].method;
+    } else if (job->status == "done") {
+        detail << "Completed all workflow steps successfully.";
+    } else if (job->status == "failed") {
+        detail << "Workflow ended with an error.";
+    } else {
+        detail << "Waiting for workflow start.";
     }
-
     if (job->status == "running" && job->progress_fraction > 0.0) {
         const int pct = static_cast<int>(job->progress_fraction * 100.0 + 0.5);
-        std::ostringstream frac;
-        frac << "Overall progress: " << pct << "%";
-        workflow_browser_->add(frac.str().c_str());
+        detail << " (" << pct << "%)";
     }
+    workflow_info_line3_->copy_label(truncate_text(detail.str(), 120).c_str());
 }
 
 void AppWindow::run_worker_loop() {
@@ -2092,7 +2095,10 @@ void AppWindow::refresh_queue_browser() {
     } else {
         status << "p" << pending << " r" << running << " d" << done << " f" << failed;
     }
-    status_box_->copy_label(status.str().c_str());
+    if (status_box_ != nullptr) {
+        const int max_chars = std::max(18, (status_box_->w() - 12) / 7);
+        status_box_->copy_label(truncate_text(status.str(), static_cast<std::size_t>(max_chars)).c_str());
+    }
 
     const QueuedJob *workflow_job = nullptr;
     if (active_job_index_ >= 0 && active_job_index_ < static_cast<int>(jobs_.size())) {

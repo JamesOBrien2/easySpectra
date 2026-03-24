@@ -20,6 +20,29 @@ std::string truncate_copy(const std::string &text, std::size_t max_len) {
     return text.substr(0, max_len - 1) + "...";
 }
 
+std::string truncate_to_width(const std::string &text, int max_px, int font_face, int font_size) {
+    if (max_px <= 0) {
+        return "";
+    }
+    fl_font(font_face, font_size);
+    int tw = 0;
+    int th = 0;
+    fl_measure(text.c_str(), tw, th, 0);
+    if (tw <= max_px) {
+        return text;
+    }
+    std::string trimmed = text;
+    while (!trimmed.empty()) {
+        trimmed.pop_back();
+        const std::string candidate = trimmed + "...";
+        fl_measure(candidate.c_str(), tw, th, 0);
+        if (tw <= max_px) {
+            return candidate;
+        }
+    }
+    return "...";
+}
+
 void draw_pill(int px, int py, int pw, int ph, Fl_Color color) {
     if (pw <= 0 || ph <= 0) {
         return;
@@ -191,22 +214,31 @@ void WorkflowProgressWidget::draw() {
         const int pct = static_cast<int>(std::round(shown_fraction * 100.0));
         text += " (" + std::to_string(pct) + "%)";
     }
-    text = truncate_copy(text, 112);
-
-    fl_color(rgb(95, 108, 127));
-    fl_font(FL_HELVETICA, 11);
-    fl_draw(text.c_str(), x() + 10, y() + h() - 8);
-
+    std::string caption;
+    int caption_w = 0;
     if (running_ && active_step_index_ >= 0 && active_step_index_ < n_steps) {
         std::ostringstream step_text;
         step_text << "Step " << (active_step_index_ + 1) << "/" << n_steps << ": " << steps_[active_step_index_];
-        const std::string caption = truncate_copy(step_text.str(), 58);
-        int tw = 0;
+        caption = truncate_copy(step_text.str(), 64);
+        fl_font(FL_HELVETICA, 10);
         int th = 0;
-        fl_measure(caption.c_str(), tw, th, 0);
+        fl_measure(caption.c_str(), caption_w, th, 0);
+    }
+
+    int left_text_max_px = w() - 22;
+    if (!caption.empty() && caption_w + 48 < w()) {
+        left_text_max_px = std::max(80, w() - caption_w - 34);
+    }
+    const std::string left_text = truncate_to_width(text, left_text_max_px, FL_HELVETICA, 11);
+
+    fl_color(rgb(95, 108, 127));
+    fl_font(FL_HELVETICA, 11);
+    fl_draw(left_text.c_str(), x() + 10, y() + h() - 8);
+
+    if (!caption.empty() && caption_w + 48 < w()) {
         fl_color(rgb(126, 137, 154));
         fl_font(FL_HELVETICA, 10);
-        fl_draw(caption.c_str(), x() + w() - tw - 12, y() + h() - 8);
+        fl_draw(caption.c_str(), x() + w() - caption_w - 12, y() + h() - 8);
     }
 
     fl_pop_clip();
