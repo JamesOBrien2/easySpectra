@@ -4,6 +4,7 @@
 #include <FL/fl_draw.H>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <iomanip>
 #include <sstream>
@@ -19,6 +20,63 @@ constexpr int kPadLeft = 20;
 constexpr int kPadRight = 12;
 constexpr int kPadTop = 30;
 constexpr int kPadBottom = 28;
+
+std::string to_lower_copy(const std::string &text) {
+    std::string out = text;
+    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return out;
+}
+
+struct SpectrumPalette {
+    Fl_Color panel_bg = rgb(250, 252, 255);
+    Fl_Color panel_border = rgb(221, 229, 240);
+    Fl_Color plot_bg = rgb(246, 250, 255);
+    Fl_Color title = rgb(82, 94, 115);
+    Fl_Color title_rule = rgb(196, 212, 232);
+    Fl_Color grid_major = rgb(228, 236, 248);
+    Fl_Color grid_minor = rgb(238, 244, 252);
+    Fl_Color axis = rgb(187, 202, 222);
+    Fl_Color trace_soft = rgb(166, 184, 216);
+    Fl_Color trace_main = rgb(112, 129, 160);
+    Fl_Color marker = rgb(206, 218, 235);
+    Fl_Color marker_selected = rgb(143, 194, 186);
+    Fl_Color marker_band = rgb(221, 239, 236);
+    Fl_Color reference = rgb(179, 166, 208);
+    Fl_Color reference_label_bg = rgb(241, 236, 250);
+    Fl_Color zoom_text = rgb(124, 121, 154);
+    Fl_Color tick = rgb(117, 127, 146);
+    Fl_Color axis_label = rgb(97, 107, 126);
+    Fl_Color selection_fill = rgb(186, 210, 238);
+    Fl_Color selection_border = rgb(140, 168, 204);
+};
+
+SpectrumPalette palette_for_nucleus(const std::string &nucleus_label) {
+    const std::string lower = to_lower_copy(nucleus_label);
+    SpectrumPalette p;
+    if (lower.find("13c") != std::string::npos) {
+        p.trace_soft = rgb(224, 183, 156);
+        p.trace_main = rgb(194, 146, 116);
+        p.marker_selected = rgb(218, 176, 139);
+        p.marker_band = rgb(249, 236, 223);
+        p.reference = rgb(190, 157, 139);
+        p.reference_label_bg = rgb(250, 242, 233);
+        p.selection_fill = rgb(235, 208, 188);
+        p.selection_border = rgb(198, 163, 137);
+        return p;
+    }
+    if (lower.find("19f") != std::string::npos) {
+        p.trace_soft = rgb(157, 206, 188);
+        p.trace_main = rgb(101, 165, 143);
+        p.marker_selected = rgb(120, 192, 171);
+        p.marker_band = rgb(224, 246, 239);
+        p.reference = rgb(123, 176, 161);
+        p.reference_label_bg = rgb(233, 248, 243);
+        p.selection_fill = rgb(188, 231, 218);
+        p.selection_border = rgb(127, 188, 170);
+        return p;
+    }
+    return p;
+}
 
 } // namespace
 
@@ -127,7 +185,9 @@ double SpectrumWidget::pixel_to_ppm(int pixel_x) const {
         return 0.0;
     }
 
-    const auto [min_ppm, max_ppm] = active_ppm_bounds();
+    const auto ppm_bounds = active_ppm_bounds();
+    const double min_ppm = ppm_bounds.first;
+    const double max_ppm = ppm_bounds.second;
     const double ppm_range = (max_ppm - min_ppm == 0.0) ? 1.0 : (max_ppm - min_ppm);
 
     const int inner_left = x() + kPadLeft;
@@ -146,47 +206,54 @@ bool SpectrumWidget::point_in_plot(int px, int py) const {
 }
 
 void SpectrumWidget::draw() {
+    const SpectrumPalette pal = palette_for_nucleus(nucleus_label_);
+
     fl_push_clip(x(), y(), w(), h());
-    fl_color(rgb(250, 252, 255));
+    fl_color(pal.panel_bg);
     fl_rectf(x(), y(), w(), h());
-    fl_color(rgb(221, 229, 240));
+    fl_color(pal.panel_border);
     fl_rect(x(), y(), w(), h());
 
     const int plot_x0 = x() + kPadLeft;
     const int plot_y0 = y() + kPadTop;
     const int plot_w = w() - kPadLeft - kPadRight;
     const int plot_h = h() - kPadTop - kPadBottom;
+    const int baseline = plot_y0 + plot_h;
 
-    fl_color(rgb(85, 95, 114));
+    fl_color(pal.plot_bg);
+    fl_rectf(plot_x0, plot_y0, plot_w, plot_h);
+
+    fl_color(pal.title);
     fl_font(FL_HELVETICA_BOLD, 12);
     fl_draw(nucleus_label_.c_str(), plot_x0, y() + 18);
-    fl_color(rgb(186, 204, 225));
+    fl_color(pal.title_rule);
     fl_rectf(plot_x0, y() + 21, 138, 1);
 
-    fl_color(rgb(236, 241, 248));
+    fl_color(pal.grid_major);
     for (int i = 0; i <= 10; ++i) {
         const int gx = plot_x0 + i * plot_w / 10;
         fl_line(gx, plot_y0, gx, plot_y0 + plot_h);
     }
 
-    fl_color(rgb(240, 244, 250));
+    fl_color(pal.grid_minor);
     for (int i = 0; i <= 4; ++i) {
         const int gy = plot_y0 + i * plot_h / 4;
         fl_line(plot_x0, gy, plot_x0 + plot_w, gy);
     }
 
-    fl_color(rgb(208, 219, 233));
-    const int baseline = plot_y0 + plot_h;
+    fl_color(pal.axis);
     fl_line(plot_x0, baseline, plot_x0 + plot_w, baseline);
 
     if (points_.size() < 2) {
-        fl_color(rgb(127, 136, 152));
+        fl_color(pal.tick);
         fl_draw("No spectrum loaded", plot_x0 + 6, plot_y0 + 22);
         fl_pop_clip();
         return;
     }
 
-    const auto [min_ppm, max_ppm] = active_ppm_bounds();
+    const auto ppm_bounds = active_ppm_bounds();
+    const double min_ppm = ppm_bounds.first;
+    const double max_ppm = ppm_bounds.second;
     const auto [min_i_it, max_i_it] = std::minmax_element(points_.begin(), points_.end(), [](const auto &a, const auto &b) {
         return a.intensity < b.intensity;
     });
@@ -198,27 +265,28 @@ void SpectrumWidget::draw() {
     const double intensity_range = (max_intensity - min_intensity == 0.0) ? 1.0 : (max_intensity - min_intensity);
 
     fl_push_clip(plot_x0, plot_y0, plot_w + 1, plot_h + 1);
-    fl_color(rgb(104, 116, 138));
-    fl_line_style(FL_SOLID, 1);
-    int prev_x = 0;
-    int prev_y = 0;
-    bool has_prev = false;
+    auto draw_trace = [&](Fl_Color color, int width) {
+        fl_color(color);
+        fl_line_style(FL_SOLID, width);
+        int prev_x = 0;
+        int prev_y = 0;
+        bool has_prev = false;
+        for (const auto &p : points_) {
+            const double x_norm = (max_ppm - p.ppm) / ppm_range;
+            const double y_norm = (p.intensity - min_intensity) / intensity_range;
 
-    for (const auto &p : points_) {
-        const double x_norm = (max_ppm - p.ppm) / ppm_range;
-        const double y_norm = (p.intensity - min_intensity) / intensity_range;
-
-        const int px = plot_x0 + static_cast<int>(x_norm * plot_w);
-        const int py = baseline - static_cast<int>(y_norm * (plot_h - 6));
-
-        if (has_prev) {
-            fl_line(prev_x, prev_y, px, py);
+            const int px = plot_x0 + static_cast<int>(x_norm * plot_w);
+            const int py = baseline - static_cast<int>(y_norm * (plot_h - 6));
+            if (has_prev) {
+                fl_line(prev_x, prev_y, px, py);
+            }
+            prev_x = px;
+            prev_y = py;
+            has_prev = true;
         }
-
-        prev_x = px;
-        prev_y = py;
-        has_prev = true;
-    }
+    };
+    draw_trace(pal.trace_soft, 3);
+    draw_trace(pal.trace_main, 2);
     fl_line_style(FL_SOLID, 0);
 
     if (!peak_markers_.empty()) {
@@ -229,11 +297,13 @@ void SpectrumWidget::draw() {
                 continue;
             }
             if (selected_group_ids_.count(marker.group_id) > 0) {
-                fl_color(rgb(123, 183, 166));
+                fl_color(pal.marker_band);
+                fl_rectf(px - 2, plot_y0, 5, plot_h);
+                fl_color(pal.marker_selected);
                 fl_line_style(FL_SOLID, 2);
             } else {
-                fl_color(rgb(203, 214, 228));
-                fl_line_style(FL_SOLID, 1);
+                fl_color(pal.marker);
+                fl_line_style(FL_DASH, 1);
             }
             fl_line(px, plot_y0, px, baseline);
         }
@@ -244,13 +314,24 @@ void SpectrumWidget::draw() {
         && highlighted_reference_index_ < static_cast<int>(reference_peaks_.size())) {
         const auto &ref = reference_peaks_[static_cast<std::size_t>(highlighted_reference_index_)];
         fl_line_style(FL_DASH, 1);
-        fl_color(rgb(174, 160, 200));
+        fl_color(pal.reference);
         fl_font(FL_HELVETICA, 10);
         const double x_norm = (max_ppm - ref.ppm) / ppm_range;
         if (x_norm >= 0.0 && x_norm <= 1.0) {
             const int px = plot_x0 + static_cast<int>(x_norm * plot_w);
             fl_line(px, plot_y0, px, baseline);
-            fl_draw(ref.label.c_str(), px - 34, plot_y0 + 12);
+            int lw = 0;
+            int lh = 0;
+            fl_measure(ref.label.c_str(), lw, lh, 0);
+            const int label_w = lw + 8;
+            const int label_h = 14;
+            const int label_x = std::max(plot_x0 + 2, std::min(plot_x0 + plot_w - label_w - 2, px - label_w / 2));
+            const int label_y = plot_y0 + 4;
+            fl_color(pal.reference_label_bg);
+            fl_rectf(label_x, label_y, label_w, label_h);
+            fl_color(pal.reference);
+            fl_rect(label_x, label_y, label_w, label_h);
+            fl_draw(ref.label.c_str(), label_x + 4, label_y + 11);
         }
         fl_line_style(FL_SOLID, 0);
     }
@@ -262,14 +343,10 @@ void SpectrumWidget::draw() {
         const int left = std::min(x1, x2);
         const int right = std::max(x1, x2);
         if (right - left > 1) {
-            fl_push_clip(left, plot_y0, right - left, plot_h);
-            fl_color(rgb(178, 197, 221));
-            for (int hx = left - plot_h; hx < right + plot_h; hx += 9) {
-                fl_line(hx, plot_y0 + plot_h, hx + plot_h, plot_y0);
-            }
-            fl_pop_clip();
-            fl_color(rgb(156, 178, 207));
-            fl_line_style(FL_DASH, 1);
+            fl_color(pal.selection_fill);
+            fl_rectf(left, plot_y0, right - left, plot_h);
+            fl_color(pal.selection_border);
+            fl_line_style(FL_DASH, 2);
             fl_rect(left, plot_y0, right - left, plot_h);
             fl_line_style(FL_SOLID, 0);
         }
@@ -279,22 +356,23 @@ void SpectrumWidget::draw() {
         std::ostringstream zoom_note;
         zoom_note << "Zoom: " << std::fixed << std::setprecision(2) << max_ppm << " to " << min_ppm
                   << " ppm (double-click to reset)";
-        fl_color(rgb(129, 125, 155));
+        fl_color(pal.zoom_text);
         fl_font(FL_HELVETICA, 11);
         fl_draw(zoom_note.str().c_str(), plot_x0 + 130, y() + 18);
     }
 
-    fl_color(rgb(123, 132, 147));
+    fl_color(pal.tick);
     fl_font(FL_HELVETICA, 10);
     for (int i = 0; i <= 10; ++i) {
         const int tick_x = plot_x0 + i * plot_w / 10;
         const double ppm_tick = max_ppm - (static_cast<double>(i) / 10.0) * ppm_range;
         std::ostringstream tick_text;
-        tick_text << std::fixed << std::setprecision(1) << ppm_tick;
+        const int precision = (ppm_range < 3.0) ? 2 : 1;
+        tick_text << std::fixed << std::setprecision(precision) << ppm_tick;
         fl_draw(tick_text.str().c_str(), tick_x - 10, y() + h() - 12);
     }
 
-    fl_color(rgb(102, 112, 130));
+    fl_color(pal.axis_label);
     fl_font(FL_HELVETICA, 11);
     fl_draw("delta [ppm]", plot_x0 + plot_w - 72, y() + h() - 8);
 
