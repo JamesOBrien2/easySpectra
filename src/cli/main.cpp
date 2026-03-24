@@ -8,7 +8,7 @@
 namespace {
 
 void print_help() {
-    std::cout << "EasyNMR CLI\n"
+    std::cout << "easySpectra CLI\n"
               << "Usage:\n"
               << "  easynmr --input <value> [options]\n\n"
               << "Options:\n"

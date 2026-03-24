@@ -339,7 +339,7 @@ def main() -> int:
     generated_out.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
-    env["EASYNMR_XTB"] = "__none__"
+    env["EASYSPECTRA_XTB"] = "__none__"
 
     print(f"[generate] using CLI: {cli}")
     for idx, case in enumerate(CASES, start=1):

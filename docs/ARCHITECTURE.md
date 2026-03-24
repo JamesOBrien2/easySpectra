@@ -3,9 +3,9 @@
 ## Components
 
 - `src/core/`: C++ job model, workflow-aware pipeline bridge, sampled spectrum loader, and spectral-product manifest model.
-- `src/cli/`: CLI front-end (`easynmr`).
-- `src/gui/`: FLTK desktop prototype (`easynmr-gui`).
-- `backend/`: local Python backend worker (`easynmr_backend.py`).
+- `src/cli/`: easySpectra CLI front-end (`easynmr`).
+- `src/gui/`: easySpectra FLTK desktop prototype (`easynmr-gui`).
+- `backend/`: easySpectra local Python backend worker (`easynmr_backend.py`).
 
 ## Data Flow
 

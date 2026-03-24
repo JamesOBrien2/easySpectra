@@ -16,7 +16,7 @@ Provenance and DOI references are in:
 
 ## 2) Convert raw/vendor files to overlay-ready XY files
 
-EasyNMR currently plots experimental overlays from **2-column text/CSV** only.
+easySpectra currently plots experimental overlays from **2-column text/CSV** only.
 
 For each tier, export one overlay-ready file and place it in:
 
@@ -44,7 +44,7 @@ This verifies:
 
 - `.mnova` direct import fails with the expected guidance message.
 - extracted Bruker directories fail with the expected guidance message.
-- every file in `converted/` parses successfully with `easynmr-expcheck`.
+- every file in `converted/` parses successfully with the easySpectra checker (`easynmr-expcheck`).
 
 ## 4) Run product-level smoke tests
 
@@ -71,7 +71,7 @@ This keeps bundled easy/medium/hard overlays for CD, `13C`, `19F`, and `31P` syn
 
 For at least one converted file per tier:
 
-1. Launch `./build/easynmr-gui`
+1. Launch the easySpectra GUI (`./build/easynmr-gui`)
 2. Run or load a computed spectrum.
 3. Click `Load Exp` and select the converted file.
 4. Confirm overlay behavior:

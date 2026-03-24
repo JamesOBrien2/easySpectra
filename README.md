@@ -9,7 +9,7 @@ It is built for ease of use:
 - compare visually,
 - export a clean figure.
 
-Pre-release version: `0.0.1-alpha.1`
+Current version: `0.0.1`
 
 ## What You Can Do Today
 
@@ -105,16 +105,40 @@ In the GUI, experimental overlays are drawn on the same x-axis with negative y-v
 
 ## Easy/Medium/Hard Test Packs
 
-### Main case map (includes SMILES)
+### Main case maps (includes SMILES)
 
 - `examples/benchmark_cases.csv`
 - `tests/spectra_comparison_cases.csv`
+
+### Comparison table (SMILES + computed vs experimental)
+
+Use `tests/spectra_comparison_cases.csv` as the main table when you want direct one-line mapping for each test case.
+
+Key columns:
+- `smiles`
+- `workflow`
+- `target_product`
+- `computed_reference_csv`
+- `experimental_overlay_file`
 
 ### Bundled examples
 
 - `examples/computed/` for computed sample outputs
 - `examples/experimental/` for experimental and converted overlays
 - `examples/external_nmr_pack/` for curated vendor-style source files and provenance
+- `examples/screenshots/` for optional visual comparison screenshots
+
+### Visual examples (screenshots)
+
+If you want to build a quick visual gallery in this README later, store screenshots in `examples/screenshots/` and link them here.
+
+Suggested gallery table:
+
+| Case | Workflow/Product | SMILES | Screenshot |
+|---|---|---|---|
+| easy_1h | NMR `1H` | `CCO` | `![easy 1H](examples/screenshots/easy_1h_gui_compare.png)` |
+| medium_cd | CD | `CC[C@H]1CC[C@@H](C)C(C)C1O` | `![medium CD](examples/screenshots/medium_cd_gui_compare.png)` |
+| hard_31p | NMR `31P` | `O=P(c1ccccc1)(c1ccccc1)c1ccccc1` | `![hard 31P](examples/screenshots/hard_31p_gui_compare.png)` |
 
 ### Run the smoke checks
 
@@ -146,9 +170,9 @@ Each run typically includes:
 
 ## Optional Backend Controls
 
-- `EASYNMR_XTB=/path/to/xtb` sets xTB path
-- `EASYNMR_XTB_TIMEOUT=25` sets per-conformer timeout (seconds)
-- `EASYNMR_XTB=__none__` forces MMFF fallback mode
+- `EASYSPECTRA_XTB=/path/to/xtb` sets xTB path
+- `EASYSPECTRA_XTB_TIMEOUT=25` sets per-conformer timeout (seconds)
+- `EASYSPECTRA_XTB=__none__` forces MMFF fallback mode
 
 ## Extra Project Docs
 

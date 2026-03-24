@@ -116,7 +116,7 @@ def write_progress(progress_path: Optional[Path], stage: str, message: str, frac
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="EasyNMR backend worker")
+    parser = argparse.ArgumentParser(description="easySpectra backend worker")
     parser.add_argument("--request", required=True, help="Request JSON path")
     parser.add_argument("--response", required=True, help="Response JSON path")
     return parser.parse_args()
@@ -213,7 +213,7 @@ def normalize_xyz_text(raw: str) -> Tuple[Optional[str], bool]:
     if not parsed_rows:
         return None, False
 
-    normalized = [str(len(parsed_rows)), "EasyNMR normalized XYZ block"]
+    normalized = [str(len(parsed_rows)), "easySpectra normalized XYZ block"]
     for sym, x, y, z in parsed_rows:
         normalized.append(f"{sym} {x:.10f} {y:.10f} {z:.10f}")
     return "\n".join(normalized) + "\n", True
@@ -279,7 +279,7 @@ def write_editable_xyz(mol: Chem.Mol, path: Path, warnings: List[str]) -> None:
     else:
         conf_id = editable.GetConformer().GetId()
 
-    write_conf_xyz(editable, conf_id, path, "EasyNMR editable structure")
+    write_conf_xyz(editable, conf_id, path, "easySpectra editable structure")
 
 
 def load_molecule(input_format: str, value: str, warnings: List[str]) -> Chem.Mol:
@@ -516,7 +516,7 @@ def optimize_conformers(
     warnings: List[str],
     progress_path: Optional[Path] = None,
 ) -> List[ConformerResult]:
-    xtb_bin = os.environ.get("EASYNMR_XTB", "xtb")
+    xtb_bin = os.environ.get("EASYSPECTRA_XTB", "xtb")
     xtb_path = shutil.which(xtb_bin)
 
     results: List[ConformerResult] = []
@@ -538,7 +538,7 @@ def optimize_conformers(
         return results
 
     max_workers = max(1, min(MAX_PARALLEL_XTB, len(conf_ids)))
-    timeout_s = int(os.environ.get("EASYNMR_XTB_TIMEOUT", "25"))
+    timeout_s = int(os.environ.get("EASYSPECTRA_XTB_TIMEOUT", "25"))
     total = max(1, len(conf_ids))
     completed = 0
     xtb_count = 0
@@ -1285,7 +1285,7 @@ def main() -> int:
     output_dir = Path(str(request.get("output_dir", request_path.parent)))
     output_dir.mkdir(parents=True, exist_ok=True)
     progress_path = Path(str(request.get("progress_json", output_dir / "progress.json")))
-    write_progress(progress_path, "initializing", "Starting EasyNMR workflow", 0.01)
+    write_progress(progress_path, "initializing", "Starting easySpectra workflow", 0.01)
 
     if workflow_kind not in {"all", "nmr", "cd"}:
         message = (
@@ -1600,8 +1600,8 @@ def main() -> int:
             "products": produced_products,
         }
     audit = {
-        "tool": "EasyNMR",
-        "backend_version": "0.2.0",
+        "tool": "easySpectra",
+        "backend_version": "0.0.1",
         "job_id": job_id,
         "timestamp_unix": int(time.time()),
         "input": {

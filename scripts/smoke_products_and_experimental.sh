@@ -11,7 +11,7 @@ echo "[1/5] Build"
 cmake --build build -j >/dev/null
 
 echo "[2/5] NMR workflow smoke run"
-EASYNMR_XTB=__none__ ./build/easynmr \
+EASYSPECTRA_XTB=__none__ ./build/easynmr \
   --input "CCO" \
   --input-format smiles \
   --workflow nmr \
@@ -19,7 +19,7 @@ EASYNMR_XTB=__none__ ./build/easynmr \
   --output-dir "$OUT_DIR" >/dev/null
 
 echo "[3/5] CD workflow smoke run"
-EASYNMR_XTB=__none__ ./build/easynmr \
+EASYSPECTRA_XTB=__none__ ./build/easynmr \
   --input "CCO" \
   --input-format smiles \
   --workflow cd \
@@ -27,7 +27,7 @@ EASYNMR_XTB=__none__ ./build/easynmr \
   --output-dir "$OUT_DIR" >/dev/null
 
 echo "[4/5] 31P workflow smoke run"
-EASYNMR_XTB=__none__ ./build/easynmr \
+EASYSPECTRA_XTB=__none__ ./build/easynmr \
   --input "CCOP(=O)(OCC)OCC" \
   --input-format smiles \
   --workflow nmr \

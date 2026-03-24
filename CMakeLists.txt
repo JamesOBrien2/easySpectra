@@ -1,11 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
-project(EasyNMR VERSION 0.0.1 LANGUAGES CXX)
+project(easySpectra VERSION 0.0.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(EASYNMR_BUILD_GUI "Build FLTK desktop GUI" ON)
+option(EASYSPECTRA_BUILD_GUI "Build FLTK desktop GUI" ON)
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
@@ -22,8 +22,8 @@ target_include_directories(easynmr_core
 
 target_compile_definitions(easynmr_core
     PUBLIC
-        EASYNMR_DEFAULT_PYTHON=\"${Python3_EXECUTABLE}\"
-        EASYNMR_BACKEND_SCRIPT=\"${CMAKE_CURRENT_SOURCE_DIR}/backend/easynmr_backend.py\"
+        EASYSPECTRA_DEFAULT_PYTHON=\"${Python3_EXECUTABLE}\"
+        EASYSPECTRA_BACKEND_SCRIPT=\"${CMAKE_CURRENT_SOURCE_DIR}/backend/easynmr_backend.py\"
 )
 
 add_executable(easynmr src/cli/main.cpp)
@@ -32,7 +32,7 @@ target_link_libraries(easynmr PRIVATE easynmr_core)
 add_executable(easynmr-expcheck src/cli/experimental_check.cpp)
 target_link_libraries(easynmr-expcheck PRIVATE easynmr_core)
 
-if(EASYNMR_BUILD_GUI)
+if(EASYSPECTRA_BUILD_GUI)
     find_package(FLTK QUIET)
     if(FLTK_FOUND)
         if(DEFINED FLTK_USE_FILE AND EXISTS "${FLTK_USE_FILE}")
@@ -54,8 +54,8 @@ if(EASYNMR_BUILD_GUI)
         else()
             target_link_libraries(easynmr-gui PRIVATE easynmr_core ${FLTK_LIBRARIES})
         endif()
-        target_compile_definitions(easynmr-gui PRIVATE EASYNMR_GUI_ENABLED=1)
+        target_compile_definitions(easynmr-gui PRIVATE EASYSPECTRA_GUI_ENABLED=1)
     else()
-        message(WARNING "FLTK not found: building CLI only. Set EASYNMR_BUILD_GUI=OFF to silence this warning.")
+        message(WARNING "FLTK not found: building CLI only. Set EASYSPECTRA_BUILD_GUI=OFF to silence this warning.")
     endif()
 endif()

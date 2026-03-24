@@ -1,5 +1,6 @@
 /build/
 /output/
+/output_*/
 /output_test*/
 /.venv/
 __pycache__/

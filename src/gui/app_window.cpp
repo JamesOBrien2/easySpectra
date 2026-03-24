@@ -740,7 +740,7 @@ AppWindow::AppWindow(int w, int h, const char *title)
     top_bar->color(ui(49, 58, 72));
     auto *top_accent = new Fl_Box(FL_FLAT_BOX, 0, 34, w, 2, "");
     top_accent->color(ui(154, 184, 204));
-    auto *top_title = new Fl_Box(12, 6, 420, 24, "EasyNMR  |  Local Spectra Predictor");
+    auto *top_title = new Fl_Box(12, 6, 420, 24, "easySpectra  |  Local Spectra Predictor");
     top_title->box(FL_NO_BOX);
     top_title->labelfont(FL_HELVETICA_BOLD);
     top_title->labelsize(12);
@@ -1928,7 +1928,7 @@ void AppWindow::on_export_spectrum() {
     std::string error_message;
     if (ext == ".png") {
         const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-        fs::path tmp_ppm = fs::temp_directory_path() / ("easynmr_plot_" + std::to_string(stamp) + ".ppm");
+        fs::path tmp_ppm = fs::temp_directory_path() / ("easyspectra_plot_" + std::to_string(stamp) + ".ppm");
         if (!export_widget_snapshot_ppm(spectrum_widget_, tmp_ppm.string(), &error_message)) {
             if (error_message.empty()) {
                 error_message = "Unknown export failure.";

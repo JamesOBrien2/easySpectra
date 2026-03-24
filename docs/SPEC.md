@@ -1,4 +1,4 @@
-# EasyNMR v1 Spec (Locked)
+# easySpectra v1 Spec (Locked)
 
 ## MVP
 
