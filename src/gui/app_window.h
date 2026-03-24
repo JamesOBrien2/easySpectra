@@ -2,6 +2,7 @@
 
 #include "core/job.h"
 #include "core/pipeline.h"
+#include "gui/colored_input_editor.h"
 #include "gui/spectrum_widget.h"
 #include "gui/structure_widget.h"
 #include "gui/workflow_progress_widget.h"
@@ -12,7 +13,6 @@
 #include <FL/Fl_Double_Window.H>
 #include <FL/Fl_Hold_Browser.H>
 #include <FL/Fl_Input.H>
-#include <FL/Fl_Multiline_Input.H>
 
 #include <atomic>
 #include <future>
@@ -92,12 +92,13 @@ class AppWindow : public Fl_Double_Window {
     void run_worker_loop();
     void refresh_queue_browser();
     void refresh_workflow_browser(const QueuedJob *job);
+    void refresh_input_syntax_mode();
     void apply_nucleus_visuals(const QueuedJob &job, const std::string &nucleus);
     void load_selected_job_visuals();
     void highlight_hydrogen_rows(const std::vector<int> &highlighted_hydrogens);
     void apply_reference_peaks(const std::string &solvent, const std::string &nucleus);
 
-    Fl_Multiline_Input *input_box_ = nullptr;
+    ColoredInputEditor *input_box_ = nullptr;
     Fl_Input *job_name_input_ = nullptr;
     Fl_Choice *format_choice_ = nullptr;
     Fl_Choice *solvent_choice_ = nullptr;

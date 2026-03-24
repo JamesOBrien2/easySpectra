@@ -37,6 +37,7 @@ if(EASYNMR_BUILD_GUI)
         add_executable(easynmr-gui
             src/gui/main.cpp
             src/gui/app_window.cpp
+            src/gui/colored_input_editor.cpp
             src/gui/spectrum_widget.cpp
             src/gui/structure_widget.cpp
             src/gui/workflow_progress_widget.cpp

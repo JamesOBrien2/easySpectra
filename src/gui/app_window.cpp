@@ -655,11 +655,10 @@ AppWindow::AppWindow(int w, int h, const char *title)
     input_label->labelcolor(ui(86, 97, 112));
     input_label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
-    input_box_ = new Fl_Multiline_Input(panel_x + 10, panel_y + 192, panel_w - 20, 64);
+    input_box_ = new ColoredInputEditor(panel_x + 10, panel_y + 192, panel_w - 20, 64);
     input_box_->value("CCO");
-    input_box_->box(FL_DOWN_BOX);
-    input_box_->color(ui(255, 255, 255));
-    input_box_->when(FL_WHEN_RELEASE | FL_WHEN_ENTER_KEY);
+    input_box_->set_syntax_mode(InputSyntaxMode::SmilesLike);
+    input_box_->when(FL_WHEN_CHANGED | FL_WHEN_ENTER_KEY);
     input_box_->callback(on_preview_cb, this);
 
     auto *structure_title = new Fl_Box(panel_x + 10, panel_y + 264, panel_w - 214, 20, "Interactive Structure");
@@ -869,6 +868,7 @@ void AppWindow::on_run_selected_cb(Fl_Widget *, void *userdata) {
 
 void AppWindow::on_preview_cb(Fl_Widget *widget, void *userdata) {
     auto *self = static_cast<AppWindow *>(userdata);
+    self->refresh_input_syntax_mode();
     if (widget == self->preview_button_) {
         if (self->preview_debounce_pending_) {
             Fl::remove_timeout(on_debounced_preview_cb, self);
@@ -954,7 +954,27 @@ void AppWindow::on_ui_tick_cb(void *userdata) {
     Fl::repeat_timeout(0.2, on_ui_tick_cb, self);
 }
 
+void AppWindow::refresh_input_syntax_mode() {
+    if (input_box_ == nullptr || format_choice_ == nullptr) {
+        return;
+    }
+
+    const char *format_text = format_choice_->text(format_choice_->value());
+    std::string normalized = format_text != nullptr ? format_text : "smiles";
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    if (normalized == "xyz") {
+        input_box_->set_syntax_mode(InputSyntaxMode::XyzLike);
+    } else {
+        input_box_->set_syntax_mode(InputSyntaxMode::SmilesLike);
+    }
+}
+
 void AppWindow::queue_current_input() {
+    refresh_input_syntax_mode();
+
     QueuedJob job;
     job.status = "pending";
 
@@ -1171,6 +1191,8 @@ void AppWindow::poll_preview_async() {
 }
 
 void AppWindow::preview_current_input(bool show_status) {
+    refresh_input_syntax_mode();
+
     if (worker_running_) {
         if (show_status) {
             status_box_->label("Preview is paused while calculations are running");
@@ -1196,6 +1218,8 @@ void AppWindow::preview_current_input(bool show_status) {
 }
 
 void AppWindow::edit_current_structure() {
+    refresh_input_syntax_mode();
+
     if (worker_running_) {
         status_box_->label("Editor is disabled while calculations are running");
         return;
@@ -1290,6 +1314,7 @@ void AppWindow::edit_current_structure() {
             break;
         }
     }
+    refresh_input_syntax_mode();
 
     preview_current_input(true);
     status_box_->label("Imported edited XYZ from xyzedit");
