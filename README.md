@@ -1,65 +1,61 @@
-# EasyNMR
+# easySpectra
 
-EasyNMR is a local-first spectroscopy workbench with both a desktop GUI and a CLI.
-It currently supports NMR prediction and a scaffold CD workflow, with a modular workflow design so additional spectra products can be added without reshaping the whole codebase.
+`easySpectra` is a local app for predicting and comparing spectra without needing cloud services.
 
-Pre-release version: `0.0.1-alpha.0`
+It is built for ease of use:
+- paste a structure,
+- run predictions,
+- load experimental data,
+- compare visually,
+- export a clean figure.
 
-## Why this project structure
+Pre-release version: `0.0.1-alpha.1`
 
-EasyNMR is organized around **workflow products**, not just one fixed NMR path.
+## What You Can Do Today
 
-- `workflow.kind` (for example `all`, `nmr`, `cd`) selects the computational route.
-- Outputs are emitted through a shared artifact contract (`spectra_manifest.csv`, `audit.json`, per-product CSVs).
-- The GUI loads spectra products from the manifest, so new spectra types can plug in cleanly.
+- Predict NMR spectra (`1H`, `13C`, `19F`, `31P`)
+- Run a CD prediction path (`cd` workflow scaffold)
+- Run everything at once (`all` workflow, default)
+- Overlay experimental traces against computed traces
+- Switch between multiple loaded experimental overlays in the GUI
+- Export the plotted spectrum view (`.png` or `.ppm`)
 
-This keeps NMR as a first-class product while leaving a clear path for CD and future computational spectroscopy workflows.
+## 5-Minute Setup
 
-## Current capabilities
-
-- C++17 core with JSON bridge to a local Python backend
-- CLI runner: `easynmr`
-- GUI app (when FLTK is available): `easynmr-gui`
-- NMR workflow (`1H`, `13C`, `19F`, `31P`) with conformer ensemble workflow
-- CD scaffold workflow (`--workflow cd`) sharing the same conformer pipeline
-- Combined workflow mode (`--workflow all`, default) to generate all currently available products in one run
-- Product manifest loading in GUI (`spectra_manifest.csv`)
-- Experimental overlay import in GUI (Bruker/MNova text exports + generic 2-column text/CSV)
-- Overlay rendering on the same x-axis with **experimental trace on negative y-axis**
-- Experimental overlay selector in GUI (`Exp: none` + loaded overlays) for fast switching while comparing products
-- Interactive linking between peak groups and assigned atoms/hydrogens
-
-## Requirements
-
-- CMake `>= 3.20`
-- C++17 compiler
-- Python 3
-- Python backend deps:
+### 1) Install Python dependencies
 
 ```bash
 pip install -r backend/requirements.txt
 ```
 
-Optional:
-
-- FLTK (for GUI build)
-- xTB binary for xTB optimization path
-
-## Build
+### 2) Build the project
 
 ```bash
 cmake -S . -B build
 cmake --build build -j
 ```
 
-CLI-only build (skip GUI):
+### 3) Launch the GUI
 
 ```bash
-cmake -S . -B build -DEASYNMR_BUILD_GUI=OFF
-cmake --build build -j
+./build/easynmr-gui
 ```
 
-## Quick start: CLI
+Note on command names:
+- The product name is `easySpectra`.
+- Current binary names are still `easynmr`, `easynmr-gui`, and `easynmr-expcheck` for compatibility.
+
+## Quick GUI Workflow
+
+1. Paste SMILES or structure text.
+2. Leave `Workflow` as `all` (default), or choose `nmr`/`cd`.
+3. Click `Preview`.
+4. Click `Queue`, then `Run Pending`.
+5. Use `Load Exp` to load an experimental file.
+6. Switch overlays with the `Exp:` selector (`none` or a loaded file).
+7. Click `Export` to save exactly what you see in the spectrum panel.
+
+## Quick CLI Workflow
 
 Basic run:
 
@@ -67,8 +63,7 @@ Basic run:
 ./build/easynmr --input "CCO" --input-format smiles --name ethanol
 ```
 
-By default, EasyNMR runs all available workflows (`--workflow all`).
-You can still select a specific workflow explicitly:
+Explicit workflow selection:
 
 ```bash
 ./build/easynmr --workflow all --input "CCO" --input-format smiles
@@ -76,137 +71,92 @@ You can still select a specific workflow explicitly:
 ./build/easynmr --workflow cd  --input "CCO" --input-format smiles
 ```
 
-Common useful flags:
-
+Helpful options:
 - `--workflow <all|nmr|cd>`
-- `--nucleus <auto|1H|13C|19F|31P>` (NMR workflow)
+- `--nucleus <auto|1H|13C|19F|31P>`
 - `--solvent <cdcl3|dmso|h2o>`
 - `--frequency-mhz <number>`
 - `--line-shape <lorentzian|gaussian|voigt>`
 - `--fwhm-hz <number>`
 
-Outputs are written to `output/<job-id>/` by default.
+Outputs are written to `output/<job-id>/`.
 
-## Quick start: GUI
+## Comparing Computed vs Experimental
 
-```bash
-./build/easynmr-gui
-```
+### Supported experimental inputs
 
-Typical flow:
+- Bruker-like exported text
+- MNova-like exported text
+- Generic 2-column text/CSV (`x, y`)
 
-1. Enter structure input (SMILES or structure text).
-2. Choose `Workflow` (`all`, `nmr`, or `cd`) and `Format`.
-3. Click `Preview`.
-4. Click `Queue`, then `Run Pending` (or `Run Selected`).
-5. Click a peak or peak-group row to inspect assignments.
-6. Use `Load Exp` to import experimental spectra overlays; use `Clear Exp` to remove them.
-7. Use `Export` in the spectrum panel to save the current plotted view (`.png`/`.ppm`).
-
-## Experimental spectra comparison
-
-Supported import style today:
-
-- Bruker-like text export
-- MNova-like text export
-- Generic two-column text/CSV (x, y)
-
-Important current limits:
+### Current limits
 
 - Bruker raw acquisition folders are not parsed directly yet.
-- MNova project files (`.mnova`, `.mnv`) are not parsed directly.
-- For both cases above, export to a two-column text/CSV first, then import.
+- MNova project files (`.mnova`, `.mnv`) are not parsed directly yet.
+- Export vendor data to 2-column text/CSV first, then load it.
 
-Validation utility:
+### Validate a file before loading
 
 ```bash
 ./build/easynmr-expcheck <experimental-spectrum-file>
 ```
 
-## Artifact layout
+In the GUI, experimental overlays are drawn on the same x-axis with negative y-values for easy visual comparison against computed traces.
 
-A completed run writes product outputs into the job directory, including:
+## Easy/Medium/Hard Test Packs
 
-- `spectra_manifest.csv` (product labels + file paths)
-- `audit.json`
-- `structure.svg`
-- `structure_atoms.csv`
-- `structure_bonds.csv`
-- product files such as:
-  - `spectrum_1h.csv`, `peaks_1h.csv`, `assignments_1h.json/csv`
-  - `spectrum_13c.csv`, `peaks_13c.csv`, ...
-  - `spectrum_19f.csv`, `peaks_19f.csv`, ...
-  - `spectrum_31p.csv`, `peaks_31p.csv`, ...
-  - `spectrum_cd.csv`, `peaks_cd.csv`, `assignments_cd.json/csv` (scaffold)
+### Main case map (includes SMILES)
 
-## Example datasets and smoke checks
+- `examples/benchmark_cases.csv`
+- `tests/spectra_comparison_cases.csv`
 
-Benchmark files are included for quick validation:
+### Bundled examples
 
-- `examples/benchmark_cases.csv` (easy / medium / hard registry)
-- `examples/computed/` (computed sample spectra)
-- `examples/experimental/`:
-  - `easy_mnova_export.txt`
-  - `medium_bruker_export.txt`
-  - `hard_generic_export.csv`
-  - generated easy/medium/hard overlays for CD, `13C`, `19F`, and `31P`
+- `examples/computed/` for computed sample outputs
+- `examples/experimental/` for experimental and converted overlays
+- `examples/external_nmr_pack/` for curated vendor-style source files and provenance
 
-Generate or refresh the extended example pack:
-
-```bash
-./scripts/generate_example_pack.py
-```
-
-Run the bundled smoke script:
+### Run the smoke checks
 
 ```bash
 ./scripts/smoke_products_and_experimental.sh
 ```
 
-This script:
+### Run the full comparison matrix
 
-1. builds the project,
-2. runs NMR, CD, and `31P` smoke predictions,
-3. validates baseline and extended experimental overlay files with `easynmr-expcheck`.
+```bash
+./tests/run_spectra_comparison_matrix.sh
+```
 
-External curated regression pack:
+### Regenerate the bundled example pack
 
-- `examples/external_nmr_pack/README.md` documents canonical easy/medium/hard vendor datasets (Bruker/MNova/JCAMP).
-- `./scripts/regression_external_nmr_pack.sh` checks raw-file failure behavior and validates converted text/CSV files (when present).
-- Conversion and recurring test procedure: `docs/EXPERIMENTAL_NMR_CONVERSION_AND_TESTING_CHECKLIST.md`.
+```bash
+./scripts/generate_example_pack.py
+```
 
-Extended bundled comparison pack:
+## Where Important Output Files Live
 
-- Includes easy/medium/hard computed + experimental overlays for:
-  - CD
-  - `13C` NMR
-  - `19F` NMR
-  - `31P` NMR
-- Case registry (including SMILES): `examples/benchmark_cases.csv`
+Each run typically includes:
+- `spectra_manifest.csv`
+- `audit.json`
+- `structure.svg`
+- `structure_atoms.csv`
+- `structure_bonds.csv`
+- spectrum-specific files such as `spectrum_1h.csv`, `peaks_1h.csv`, `assignments_1h.csv` (and equivalent for `13C`, `19F`, `31P`, `cd`)
 
-Tests folder mapping + runnable matrix:
+## Optional Backend Controls
 
-- `tests/spectra_comparison_cases.csv` gives direct mapping of
-  - SMILES
-  - workflow/nucleus
-  - computed reference file
-  - experimental overlay file
-- `./tests/run_spectra_comparison_matrix.sh` runs the full comparison matrix checks.
+- `EASYNMR_XTB=/path/to/xtb` sets xTB path
+- `EASYNMR_XTB_TIMEOUT=25` sets per-conformer timeout (seconds)
+- `EASYNMR_XTB=__none__` forces MMFF fallback mode
 
-## Backend controls
+## Extra Project Docs
 
-Environment variables:
-
-- `EASYNMR_XTB=/path/to/xtb` to set xTB binary path
-- `EASYNMR_XTB_TIMEOUT=25` to cap per-conformer xTB wall time (seconds)
-- `EASYNMR_XTB=__none__` to force MMFF fallback mode
-
-## Repository docs
-
-- `docs/SPEC.md` - locked v1 scope
-- `docs/ARCHITECTURE.md` - implementation architecture and data flow
-- `docs/ROADMAP.md` - near-term development plan
-- `docs/EXPERIMENTAL_NMR_CONVERSION_AND_TESTING_CHECKLIST.md` - recurring external dataset conversion and regression checklist
+- `docs/ARCHITECTURE.md`
+- `docs/ROADMAP.md`
+- `docs/SPEC.md`
+- `docs/EXPERIMENTAL_NMR_CONVERSION_AND_TESTING_CHECKLIST.md`
+- `docs/CHANGELOG.md`
 
 ## Tested NMR References
 
