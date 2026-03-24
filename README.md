@@ -147,6 +147,7 @@ Each run typically includes:
 
 - `docs/ARCHITECTURE.md`
 - `docs/ROADMAP.md`
+- `docs/TODO.md`
 - `docs/SPEC.md`
 - `docs/EXPERIMENTAL_NMR_CONVERSION_AND_TESTING_CHECKLIST.md`
 - `docs/CHANGELOG.md`

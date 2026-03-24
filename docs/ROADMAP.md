@@ -1,24 +1,42 @@
 # Roadmap
 
-## Prototype (1-2 weeks)
+This roadmap prioritizes what can be delivered well with the current stack first (`xTB` + existing C++/Python workflow), then stages features that need heavier heuristics or additional engines.
 
-- Repo scaffold and build system.
-- CLI and GUI shells.
-- End-to-end local job execution with deterministic placeholder backend.
-- Queue UX skeleton: enqueue, run, retry, cancel flagging.
-- Initial plotting and artifact exports.
+## Current Baseline
 
-## Usable v1 (1-2 months)
+- Local GUI + CLI workflow with queueing and artifact exports.
+- Multi-product pipeline with `all`, `nmr`, and `cd`.
+- NMR support for `1H`, `13C`, `19F`, `31P`.
+- Experimental overlay loading and side-by-side computed vs experimental comparison.
 
-- Replace placeholder predictor with xTB/AIMNet2 + conformer workflow.
-- Add robust atom-equivalence and assignment mapping.
-- Improve spectral simulation controls and integral handling.
-- Add PDF/SVG export polish and provenance completeness.
-- macOS packaging; Linux packaging next.
+## Near-Term (Best Fit for Current xTB Stack)
 
-## Post-v1
+- Complete CD from scaffold to a stronger production path.
+- IR prediction v1 using xTB-derived frequencies/intensities with practical plotting controls.
+- Exact mass + isotope pattern support (formula-based, quick MS utility).
+- Adduct table support for common positive/negative ionization modes.
+- Property summaries from current runs (dipole, HOMO/LUMO gap, conformer energy spread).
+- Continued GUI polish for export quality and comparison UX.
 
-- Optional ORCA high-accuracy mode.
-- Experimental overlay import/alignment.
-- Extended nuclei support (13C and beyond).
-- Add additional spectroscopy product modules (for example CD) on the shared conformer + quantum workflow backbone.
+Why near-term:
+- These features are either directly available from current calculations, or can be added with lightweight post-processing.
+
+## Mid-Term (xTB-Assisted + Extra Heuristics)
+
+- Basic mass-spec fragmentation prototype (rule-based fragments for common motifs).
+- Better computed/experimental alignment tools (auto-shift, normalization options, simple fit metrics).
+- Broader import tooling for vendor exports and conversion helpers.
+- Batch workflow enhancements for larger curated comparison suites.
+
+Why mid-term:
+- Feasible, but requires substantial rules/heuristics and validation to avoid misleading outputs.
+
+## Far-Term (Likely Requires Additional Engines or Data)
+
+- Higher-quality MS/MS fragmentation prediction and confidence scoring.
+- Raman module with usable quality targets.
+- Optional high-accuracy engine integrations for selected products (for example ORCA-backed workflows).
+- Deeper quantitative matching layers for experimental/computed benchmarking.
+
+Why far-term:
+- These items typically need methods beyond current xTB-centered capabilities, plus broader benchmarking datasets.
