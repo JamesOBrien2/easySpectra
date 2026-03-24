@@ -1,17 +1,19 @@
 # EasyNMR
 
-EasyNMR is a local-first desktop + CLI tool for fast, explainable NMR prediction from
-SMILES or structure files.
+EasyNMR is a local-first desktop + CLI tool for fast, explainable computational spectroscopy.
+The current implemented product is NMR prediction from SMILES or structure files.
 
 Current pre-release:
 - `0.0.1-alpha.0`
 
 Current scaffold includes:
 - C++17 core with JSON bridge to local Python backend
+- workflow-oriented request contract (`workflow.kind`) so NMR is one module and future spectra workflows can be added cleanly
 - `easynmr` CLI runner
 - `easynmr-gui` FLTK prototype (when FLTK is available)
 - RDKit + xTB fast-path backend with conformer generation, Boltzmann filtering, and first-order `1H`/`13C`/`19F` simulation
 - Export-ready artifact layout (`spectrum_*.csv`, `peaks_*.csv`, `assignments_*.json`, `spectra_manifest.csv`, `audit.json`)
+- Product-style spectra manifest loading in the GUI (`spectra_manifest.csv`), so NMR outputs are handled as one spectral product family
 - 2D structure preview (`structure.svg`) and interactive peak-group to atom assignment linking in GUI
 
 ## Build
@@ -32,6 +34,12 @@ cmake --build build -j
 
 ```bash
 ./build/easynmr --input "CCO" --input-format smiles --name ethanol
+```
+
+Optional explicit workflow selection (current supported value: `nmr`):
+
+```bash
+./build/easynmr --workflow nmr --input "CCO" --input-format smiles
 ```
 
 Outputs are written to `output/<job-id>/` by default.

@@ -16,6 +16,8 @@ struct PeakMarker {
     int group_id = 0;
     double center_ppm = 0.0;
     std::string label;
+    std::string multiplicity = "singlet";
+    double j_hz = 0.0;
 };
 
 struct ReferencePeak {
@@ -34,6 +36,7 @@ class SpectrumWidget : public Fl_Widget {
     void set_reference_peaks(std::vector<ReferencePeak> peaks);
     void set_highlighted_reference(int ref_index);
     void set_nucleus_label(const std::string &label);
+    void set_render_settings(const std::string &line_shape, double fwhm_hz, double frequency_mhz);
     void set_on_peak_selected(std::function<void(int)> callback);
     bool load_from_csv(const std::string &csv_path);
     void reset_zoom();
@@ -54,6 +57,9 @@ class SpectrumWidget : public Fl_Widget {
     std::string nucleus_label_ = "1H NMR Spectrum";
     std::unordered_set<int> selected_group_ids_;
     std::function<void(int)> on_peak_selected_;
+    std::string line_shape_ = "lorentzian";
+    double fwhm_hz_ = 1.0;
+    double frequency_mhz_ = 400.0;
 
     bool zoom_active_ = false;
     double view_min_ppm_ = 0.0;

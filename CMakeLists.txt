@@ -11,6 +11,7 @@ find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 add_library(easynmr_core
     src/core/pipeline.cpp
+    src/core/spectral_product.cpp
     src/core/spectrum.cpp
 )
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <cctype>
 #include <string>
 #include <vector>
 
@@ -44,7 +46,33 @@ inline InputFormat input_format_from_string(const std::string &value) {
     return InputFormat::Unknown;
 }
 
+enum class WorkflowKind {
+    Nmr,
+    Unknown
+};
+
+inline std::string to_string(WorkflowKind kind) {
+    switch (kind) {
+    case WorkflowKind::Nmr:
+        return "nmr";
+    default:
+        return "unknown";
+    }
+}
+
+inline WorkflowKind workflow_kind_from_string(const std::string &value) {
+    std::string lowered = value;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (lowered == "nmr") {
+        return WorkflowKind::Nmr;
+    }
+    return WorkflowKind::Unknown;
+}
+
 struct JobConfig {
+    WorkflowKind workflow_kind = WorkflowKind::Nmr;
     std::string job_name = "untitled";
     std::string input_value;
     InputFormat input_format = InputFormat::Smiles;

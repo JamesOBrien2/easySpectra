@@ -2,6 +2,7 @@
 
 #include "core/job.h"
 #include "core/pipeline.h"
+#include "core/spectral_product.h"
 #include "gui/colored_input_editor.h"
 #include "gui/spectrum_widget.h"
 #include "gui/structure_widget.h"
@@ -42,12 +43,6 @@ struct QueuedJob {
     std::string progress_stage;
     std::string progress_message;
     double progress_fraction = 0.0;
-};
-
-struct NucleusResultFiles {
-    std::string spectrum_csv;
-    std::string peaks_csv;
-    std::string assignments_csv;
 };
 
 class AppWindow : public Fl_Double_Window {
@@ -151,7 +146,7 @@ class AppWindow : public Fl_Double_Window {
     bool preview_inflight_show_status_ = false;
     JobConfig preview_pending_cfg_;
     std::string active_nucleus_ = "1H";
-    std::map<std::string, NucleusResultFiles> active_nucleus_results_;
+    std::map<std::string, SpectralProductFiles> active_spectral_products_;
 
     std::unordered_map<int, std::vector<int>> group_to_atoms_;
     std::map<int, int> group_to_peak_row_;

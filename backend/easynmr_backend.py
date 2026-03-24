@@ -1070,7 +1070,7 @@ def write_spectra_manifest(
 ) -> None:
     with path_csv.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["nucleus", "spectrum_csv", "peaks_csv", "assignments_csv"])
+        writer.writerow(["spectrum_label", "spectrum_csv", "peaks_csv", "assignments_csv"])
         for nucleus_label, spectrum_csv, peaks_csv, assignments_csv in rows:
             writer.writerow([nucleus_label, str(spectrum_csv), str(peaks_csv), str(assignments_csv)])
 
@@ -1084,6 +1084,13 @@ def main() -> int:
 
     job_id = str(request.get("job_id", "job-unknown"))
     mode = str(request.get("mode", "predict")).lower()
+    workflow_obj = request.get("workflow", {})
+    if isinstance(workflow_obj, dict):
+        workflow_kind = str(workflow_obj.get("kind", "nmr")).strip().lower()
+    else:
+        workflow_kind = str(workflow_obj).strip().lower()
+    if not workflow_kind:
+        workflow_kind = "nmr"
     input_obj = request.get("input", {})
     settings = request.get("settings", {})
 
@@ -1107,6 +1114,23 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     progress_path = Path(str(request.get("progress_json", output_dir / "progress.json")))
     write_progress(progress_path, "initializing", "Starting EasyNMR workflow", 0.01)
+
+    if workflow_kind != "nmr":
+        message = (
+            f"Unsupported workflow kind '{workflow_kind}'. "
+            "Currently available workflows: nmr."
+        )
+        write_progress(progress_path, "failed", message, 1.0)
+        response = {
+            "status": "failed",
+            "message": message,
+            "workflow": {"kind": workflow_kind},
+            "output_dir": str(output_dir),
+            "progress_json": str(progress_path),
+            "warnings": [],
+        }
+        response_path.write_text(json.dumps(response, indent=2), encoding="utf-8")
+        return 0
 
     start_time = time.time()
 
@@ -1147,6 +1171,7 @@ def main() -> int:
         response = {
             "status": "ok",
             "message": "Preview ready",
+            "workflow": {"kind": workflow_kind},
             "output_dir": str(output_dir),
             "structure_svg": str(structure_svg),
             "structure_atoms_csv": str(structure_atoms_csv),
@@ -1316,6 +1341,7 @@ def main() -> int:
             "formal_charge": Chem.GetFormalCharge(mol),
         },
         "settings": settings,
+        "workflow": {"kind": workflow_kind},
         "solvent_xtb": solvent,
         "runtime_seconds": round(runtime_s, 4),
         "conformers": {
@@ -1328,6 +1354,7 @@ def main() -> int:
         },
         "warnings": warnings,
         "pipeline": {
+            "workflow_kind": workflow_kind,
             "geometry": "ETKDG + xTB(opt) with MMFF fallback",
             "simulation_mode": "first-order",
             "nucleus": default_nucleus_symbol,
@@ -1340,6 +1367,7 @@ def main() -> int:
     response = {
         "status": "ok",
         "message": "Prediction complete",
+        "workflow": {"kind": workflow_kind},
         "output_dir": str(output_dir),
         "spectrum_csv": str(spectrum_csv),
         "peaks_csv": str(peaks_csv),

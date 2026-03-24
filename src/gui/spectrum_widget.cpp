@@ -50,6 +50,11 @@ struct SpectrumPalette {
     Fl_Color selection_border = rgb(140, 168, 204);
 };
 
+struct MultipletComponent {
+    double offset_units = 0.0;
+    double amplitude = 1.0;
+};
+
 SpectrumPalette palette_for_nucleus(const std::string &nucleus_label) {
     const std::string lower = to_lower_copy(nucleus_label);
     SpectrumPalette p;
@@ -76,6 +81,38 @@ SpectrumPalette palette_for_nucleus(const std::string &nucleus_label) {
         return p;
     }
     return p;
+}
+
+std::vector<MultipletComponent> multiplet_components(const std::string &multiplicity_raw) {
+    const std::string mult = to_lower_copy(multiplicity_raw);
+    if (mult == "doublet" || mult == "d") {
+        return {{-0.5, 1.0}, {0.5, 1.0}};
+    }
+    if (mult == "triplet" || mult == "t") {
+        return {{-1.0, 1.0}, {0.0, 2.0}, {1.0, 1.0}};
+    }
+    if (mult == "quartet" || mult == "q") {
+        return {{-1.5, 1.0}, {-0.5, 3.0}, {0.5, 3.0}, {1.5, 1.0}};
+    }
+    if (mult == "quintet" || mult == "quint") {
+        return {{-2.0, 1.0}, {-1.0, 4.0}, {0.0, 6.0}, {1.0, 4.0}, {2.0, 1.0}};
+    }
+    if (mult == "multiplet" || mult == "m") {
+        return {{-1.2, 0.8}, {-0.6, 1.0}, {0.0, 1.2}, {0.6, 1.0}, {1.2, 0.8}};
+    }
+    return {{0.0, 1.0}};
+}
+
+double line_shape_value(const std::string &line_shape, double dx, double gamma, double sigma) {
+    if (line_shape == "gaussian") {
+        return std::exp(-((dx * dx) / (2.0 * sigma * sigma)));
+    }
+    if (line_shape == "voigt") {
+        const double g = std::exp(-((dx * dx) / (2.0 * sigma * sigma)));
+        const double l = (gamma * gamma) / (dx * dx + gamma * gamma);
+        return 0.5 * (g + l);
+    }
+    return (gamma * gamma) / (dx * dx + gamma * gamma);
 }
 
 } // namespace
@@ -141,6 +178,17 @@ void SpectrumWidget::set_highlighted_reference(int ref_index) {
 
 void SpectrumWidget::set_nucleus_label(const std::string &label) {
     nucleus_label_ = label.empty() ? "NMR Spectrum" : label;
+    redraw();
+}
+
+void SpectrumWidget::set_render_settings(const std::string &line_shape, double fwhm_hz, double frequency_mhz) {
+    std::string normalized = to_lower_copy(line_shape);
+    if (normalized != "gaussian" && normalized != "voigt") {
+        normalized = "lorentzian";
+    }
+    line_shape_ = normalized;
+    fwhm_hz_ = (std::isfinite(fwhm_hz) && fwhm_hz > 0.0) ? fwhm_hz : 1.0;
+    frequency_mhz_ = (std::isfinite(frequency_mhz) && frequency_mhz > 0.0) ? frequency_mhz : 400.0;
     redraw();
 }
 
@@ -289,44 +337,80 @@ void SpectrumWidget::draw() {
     draw_trace(pal.trace_main, 2);
     fl_line_style(FL_SOLID, 0);
 
-    // Draw selected groups as a local multiplet-following trace so the highlight
-    // tracks the actual splitting pattern rather than only the center marker.
+    // Draw selected groups as a representative multiplet envelope so the
+    // highlight follows the splitting pattern rather than a center line.
     if (!peak_markers_.empty() && !selected_group_ids_.empty()) {
-        const double min_half_window = std::max(0.015, ppm_range * 0.003);
-        const double max_half_window = std::max(0.08, ppm_range * 0.06);
+        const double safe_freq_mhz = std::max(1e-6, std::abs(frequency_mhz_));
+        const double fwhm_ppm = std::max(1e-6, std::abs(fwhm_hz_) / safe_freq_mhz);
+        const double gamma = std::max(1e-6, fwhm_ppm / 2.0);
+        const double sigma = std::max(1e-6, fwhm_ppm / 2.355);
         for (const auto &marker : peak_markers_) {
             if (selected_group_ids_.count(marker.group_id) == 0) {
                 continue;
             }
+            const auto components = multiplet_components(marker.multiplicity);
+            double j_ppm = std::abs(marker.j_hz) / safe_freq_mhz;
+            if (j_ppm <= 1e-8 && components.size() > 1) {
+                j_ppm = std::max(fwhm_ppm * 0.9, ppm_range * 0.0025);
+            }
 
-            double nearest = ppm_range;
-            for (const auto &other : peak_markers_) {
-                if (other.group_id == marker.group_id) {
-                    continue;
+            double min_component_offset = 0.0;
+            double max_component_offset = 0.0;
+            for (const auto &component : components) {
+                const double off = component.offset_units * j_ppm;
+                min_component_offset = std::min(min_component_offset, off);
+                max_component_offset = std::max(max_component_offset, off);
+            }
+
+            const double core_half_span = std::max(std::abs(min_component_offset), std::abs(max_component_offset));
+            const double half_window = std::max(core_half_span + 4.0 * fwhm_ppm, std::max(0.02, ppm_range * 0.01));
+            const double lo = std::max(min_ppm, marker.center_ppm - half_window);
+            const double hi = std::min(max_ppm, marker.center_ppm + half_window);
+            if (hi - lo <= 1e-8) {
+                continue;
+            }
+
+            double local_peak = min_intensity;
+            for (const auto &p : points_) {
+                if (p.ppm >= lo && p.ppm <= hi) {
+                    local_peak = std::max(local_peak, p.intensity);
                 }
-                nearest = std::min(nearest, std::abs(other.center_ppm - marker.center_ppm));
             }
-            if (nearest <= 1e-9 || !std::isfinite(nearest)) {
-                nearest = ppm_range * 0.04;
+            if (local_peak <= min_intensity) {
+                local_peak = min_intensity + 0.75 * intensity_range;
             }
 
-            const double half_window = std::max(min_half_window, std::min(max_half_window, nearest * 0.42));
-            const double lo = marker.center_ppm - half_window;
-            const double hi = marker.center_ppm + half_window;
+            const int sample_count = std::max(64, static_cast<int>((hi - lo) / ppm_range * plot_w * 1.6));
+            std::vector<std::pair<double, double>> model;
+            model.reserve(static_cast<std::size_t>(sample_count + 1));
+            double model_max = 0.0;
+            for (int i = 0; i <= sample_count; ++i) {
+                const double t = static_cast<double>(i) / static_cast<double>(sample_count);
+                const double sample_ppm = hi - (hi - lo) * t;
+                double sample_intensity = 0.0;
+                for (const auto &component : components) {
+                    const double center = marker.center_ppm + component.offset_units * j_ppm;
+                    const double dx = sample_ppm - center;
+                    sample_intensity += component.amplitude * line_shape_value(line_shape_, dx, gamma, sigma);
+                }
+                model.push_back({sample_ppm, sample_intensity});
+                model_max = std::max(model_max, sample_intensity);
+            }
+            if (model_max <= 1e-12) {
+                continue;
+            }
 
-            auto draw_segment = [&](Fl_Color color, int width) {
+            auto draw_model = [&](Fl_Color color, int width, double scale) {
                 fl_color(color);
                 fl_line_style(FL_SOLID, width);
                 bool has_prev = false;
                 int prev_x = 0;
                 int prev_y = 0;
-                for (const auto &p : points_) {
-                    if (p.ppm < lo || p.ppm > hi) {
-                        has_prev = false;
-                        continue;
-                    }
-                    const double x_norm = (max_ppm - p.ppm) / ppm_range;
-                    const double y_norm = (p.intensity - min_intensity) / intensity_range;
+                for (const auto &sample : model) {
+                    const double x_norm = (max_ppm - sample.first) / ppm_range;
+                    const double normalized = sample.second / model_max;
+                    const double shaped_intensity = min_intensity + normalized * (local_peak - min_intensity) * scale;
+                    const double y_norm = std::max(0.0, std::min(1.0, (shaped_intensity - min_intensity) / intensity_range));
                     const int px = plot_x0 + static_cast<int>(x_norm * plot_w);
                     const int py = baseline - static_cast<int>(y_norm * (plot_h - 6));
                     if (has_prev) {
@@ -338,8 +422,8 @@ void SpectrumWidget::draw() {
                 }
             };
 
-            draw_segment(pal.marker_band, 7);
-            draw_segment(pal.marker_selected, 3);
+            draw_model(pal.marker_band, 7, 1.06);
+            draw_model(pal.marker_selected, 3, 1.02);
             fl_line_style(FL_SOLID, 0);
         }
     }
@@ -354,8 +438,7 @@ void SpectrumWidget::draw() {
             if (selected_group_ids_.count(marker.group_id) > 0) {
                 fl_color(pal.marker_selected);
                 fl_line_style(FL_SOLID, 2);
-                fl_line(px, baseline - 8, px, baseline);
-                fl_pie(px - 3, baseline - 3, 6, 6, 0, 360);
+                fl_pie(px - 4, baseline - 4, 8, 8, 0, 360);
             } else {
                 fl_color(pal.marker);
                 fl_line_style(FL_DASH, 1);

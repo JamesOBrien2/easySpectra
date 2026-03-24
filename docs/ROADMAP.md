@@ -21,3 +21,4 @@
 - Optional ORCA high-accuracy mode.
 - Experimental overlay import/alignment.
 - Extended nuclei support (13C and beyond).
+- Add additional spectroscopy product modules (for example CD) on the shared conformer + quantum workflow backbone.

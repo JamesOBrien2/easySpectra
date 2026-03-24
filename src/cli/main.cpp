@@ -15,6 +15,7 @@ void print_help() {
               << "  --input <value>                Input content (e.g. SMILES)\n"
               << "  --input-format <smiles|mol|sdf|xyz>\n"
               << "  --name <job_name>\n"
+              << "  --workflow <nmr>\n"
               << "  --output-dir <path>\n"
               << "  --solvent <cdcl3|dmso|h2o>\n"
               << "  --nucleus <auto|1H|13C|19F>\n"
@@ -61,6 +62,14 @@ int main(int argc, char **argv) {
         }
         if (arg == "--name") {
             config.job_name = take_value(arg);
+            continue;
+        }
+        if (arg == "--workflow") {
+            config.workflow_kind = easynmr::workflow_kind_from_string(take_value(arg));
+            if (config.workflow_kind == easynmr::WorkflowKind::Unknown) {
+                std::cerr << "Unsupported --workflow value (supported: nmr)\n";
+                return 1;
+            }
             continue;
         }
         if (arg == "--output-dir") {

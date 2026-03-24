@@ -149,6 +149,9 @@ JobOutputs Pipeline::run_impl(
         request_file << "{\n";
         request_file << "  \"job_id\": \"" << escape_json(outputs.job_id) << "\",\n";
         request_file << "  \"mode\": \"" << escape_json(mode) << "\",\n";
+        request_file << "  \"workflow\": {\n";
+        request_file << "    \"kind\": \"" << escape_json(to_string(config.workflow_kind)) << "\"\n";
+        request_file << "  },\n";
         request_file << "  \"job_name\": \"" << escape_json(config.job_name) << "\",\n";
         request_file << "  \"input\": {\n";
         request_file << "    \"format\": \"" << to_string(config.input_format) << "\",\n";

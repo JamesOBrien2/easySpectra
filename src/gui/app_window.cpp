@@ -24,6 +24,7 @@ struct PeakRow {
     int group_id = 0;
     double center_ppm = 0.0;
     std::string multiplicity;
+    double j_hz = 0.0;
     double integral = 0.0;
 };
 
@@ -35,6 +36,8 @@ struct WorkflowStep {
 std::string normalize_nucleus_label(const std::string &raw);
 bool is_proton_nucleus(const std::string &nucleus);
 std::string nucleus_symbol(const std::string &nucleus);
+bool is_known_nmr_nucleus(const std::string &label);
+std::string spectrum_title_for_label(const std::string &label);
 
 std::string truncate_text(const std::string &value, std::size_t max_len) {
     if (value.size() <= max_len) {
@@ -264,6 +267,7 @@ std::vector<PeakRow> read_peak_rows(const std::string &path) {
             continue;
         }
         row.multiplicity = trim_copy(fields[3]);
+        try_parse_double(fields[4], row.j_hz);
         if (!try_parse_double(fields[5], row.integral)) {
             continue;
         }
@@ -405,39 +409,16 @@ std::vector<StructureBond> read_structure_bonds(const std::string &path) {
     return bonds;
 }
 
-std::map<std::string, NucleusResultFiles> read_spectra_manifest(const std::string &path) {
-    std::map<std::string, NucleusResultFiles> out;
-    std::ifstream input(path);
-    if (!input) {
-        return out;
+std::map<std::string, SpectralProductFiles> read_spectra_manifest(const std::string &path) {
+    std::map<std::string, SpectralProductFiles> out;
+    auto manifest = load_spectral_products_manifest(path);
+    for (auto &files : manifest) {
+        const std::string normalized = normalize_nucleus_label(files.label);
+        if (!normalized.empty()) {
+            files.label = normalized;
+        }
+        out[files.label] = std::move(files);
     }
-
-    std::string line;
-    bool header = true;
-    while (std::getline(input, line)) {
-        if (header) {
-            header = false;
-            continue;
-        }
-        if (line.empty()) {
-            continue;
-        }
-
-        const auto fields = parse_csv_line(line);
-        if (fields.size() < 4) {
-            continue;
-        }
-
-        const std::string nucleus = normalize_nucleus_label(fields[0]);
-        NucleusResultFiles files;
-        files.spectrum_csv = trim_copy(fields[1]);
-        files.peaks_csv = trim_copy(fields[2]);
-        files.assignments_csv = trim_copy(fields[3]);
-        if (!files.spectrum_csv.empty()) {
-            out[nucleus] = std::move(files);
-        }
-    }
-
     return out;
 }
 
@@ -446,6 +427,18 @@ std::vector<ReferencePeak> reference_peaks_for_solvent(const std::string &solven
     std::transform(solvent.begin(), solvent.end(), solvent.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     std::string nucleus = nucleus_raw;
     std::transform(nucleus.begin(), nucleus.end(), nucleus.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    if (nucleus == "h1" || nucleus == "h") {
+        nucleus = "1h";
+    } else if (nucleus == "c13" || nucleus == "c") {
+        nucleus = "13c";
+    } else if (nucleus == "f19" || nucleus == "f") {
+        nucleus = "19f";
+    }
+
+    if (nucleus != "1h" && nucleus != "13c" && nucleus != "19f") {
+        return {};
+    }
 
     std::vector<ReferencePeak> peaks;
     if (nucleus == "13c") {
@@ -519,15 +512,24 @@ int workflow_stage_index(const std::string &stage_raw) {
 }
 
 std::string normalize_nucleus_label(const std::string &raw) {
-    std::string nucleus = raw;
+    std::string nucleus = trim_copy(raw);
+    if (nucleus.empty()) {
+        return {};
+    }
     std::transform(nucleus.begin(), nucleus.end(), nucleus.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (nucleus == "auto" || nucleus == "all") {
+        return "1H";
+    }
+    if (nucleus == "1h" || nucleus == "h1" || nucleus == "h") {
+        return "1H";
+    }
     if (nucleus == "13c" || nucleus == "c13" || nucleus == "c") {
         return "13C";
     }
     if (nucleus == "19f" || nucleus == "f19" || nucleus == "f") {
         return "19F";
     }
-    return "1H";
+    return trim_copy(raw);
 }
 
 bool is_proton_nucleus(const std::string &nucleus) {
@@ -542,7 +544,26 @@ std::string nucleus_symbol(const std::string &nucleus) {
     if (normalized == "19F") {
         return "F";
     }
-    return "H";
+    if (normalized == "1H") {
+        return "H";
+    }
+    return "Nuc";
+}
+
+bool is_known_nmr_nucleus(const std::string &label) {
+    const std::string normalized = normalize_nucleus_label(label);
+    return normalized == "1H" || normalized == "13C" || normalized == "19F";
+}
+
+std::string spectrum_title_for_label(const std::string &label) {
+    const std::string normalized = normalize_nucleus_label(label);
+    if (is_known_nmr_nucleus(normalized)) {
+        return normalized + " NMR Spectrum";
+    }
+    if (!normalized.empty()) {
+        return normalized + " Spectrum";
+    }
+    return "Spectrum";
 }
 
 } // namespace
@@ -1175,7 +1196,7 @@ void AppWindow::poll_preview_async() {
         }
         active_nucleus_ = normalize_nucleus_label(cfg.nucleus);
         apply_reference_peaks(cfg.solvent, active_nucleus_);
-        spectrum_widget_->set_nucleus_label(active_nucleus_ + " NMR Spectrum");
+        spectrum_widget_->set_nucleus_label(spectrum_title_for_label(active_nucleus_));
         if (show_status) {
             status_box_->label("Preview updated from current input");
         }
@@ -1268,7 +1289,7 @@ void AppWindow::edit_current_structure() {
     }
     active_nucleus_ = normalize_nucleus_label(cfg.nucleus);
     apply_reference_peaks(cfg.solvent, active_nucleus_);
-    spectrum_widget_->set_nucleus_label(active_nucleus_ + " NMR Spectrum");
+    spectrum_widget_->set_nucleus_label(spectrum_title_for_label(active_nucleus_));
 
     const std::string editor_bin = find_xyzedit_binary();
     if (editor_bin.empty()) {
@@ -1617,10 +1638,14 @@ void AppWindow::on_structure_atom_picked(int atom_index, const std::vector<int> 
 
 void AppWindow::apply_nucleus_visuals(const QueuedJob &job, const std::string &nucleus) {
     active_nucleus_ = normalize_nucleus_label(nucleus);
+    if (active_nucleus_.empty()) {
+        active_nucleus_ = "1H";
+    }
+    spectrum_widget_->set_render_settings(job.config.line_shape, job.config.fwhm_hz, job.config.frequency_mhz);
 
-    NucleusResultFiles files;
-    auto it = active_nucleus_results_.find(active_nucleus_);
-    if (it != active_nucleus_results_.end()) {
+    SpectralProductFiles files;
+    auto it = active_spectral_products_.find(active_nucleus_);
+    if (it != active_spectral_products_.end()) {
         files = it->second;
     } else {
         files.spectrum_csv = job.spectrum_csv;
@@ -1641,7 +1666,7 @@ void AppWindow::apply_nucleus_visuals(const QueuedJob &job, const std::string &n
     const auto peak_rows = read_peak_rows(files.peaks_csv);
     group_to_atoms_ = read_assignments(files.assignments_csv);
     apply_reference_peaks(job.config.solvent, active_nucleus_);
-    spectrum_widget_->set_nucleus_label(active_nucleus_ + " NMR Spectrum");
+    spectrum_widget_->set_nucleus_label(spectrum_title_for_label(active_nucleus_));
 
     peak_browser_->clear();
     atom_browser_->clear();
@@ -1664,6 +1689,8 @@ void AppWindow::apply_nucleus_visuals(const QueuedJob &job, const std::string &n
         marker.group_id = row.group_id;
         marker.center_ppm = row.center_ppm;
         marker.label = row.multiplicity;
+        marker.multiplicity = row.multiplicity;
+        marker.j_hz = row.j_hz;
         markers.push_back(marker);
     }
     spectrum_widget_->set_peak_markers(std::move(markers));
@@ -1736,17 +1763,18 @@ void AppWindow::load_selected_job_visuals() {
         structure_widget_->set_structure(std::move(structure_atoms), std::move(structure_bonds));
     }
 
-    active_nucleus_results_.clear();
+    active_spectral_products_.clear();
     if (!job.spectra_manifest_csv.empty()) {
-        active_nucleus_results_ = read_spectra_manifest(job.spectra_manifest_csv);
+        active_spectral_products_ = read_spectra_manifest(job.spectra_manifest_csv);
     }
-    if (active_nucleus_results_.empty() && !job.spectrum_csv.empty()) {
+    if (active_spectral_products_.empty() && !job.spectrum_csv.empty()) {
         const std::string fallback_nucleus = normalize_nucleus_label(job.config.nucleus);
-        active_nucleus_results_[fallback_nucleus] = {
-            job.spectrum_csv,
-            job.peaks_csv,
-            job.assignments_csv,
-        };
+        SpectralProductFiles fallback;
+        fallback.label = fallback_nucleus.empty() ? "1H" : fallback_nucleus;
+        fallback.spectrum_csv = job.spectrum_csv;
+        fallback.peaks_csv = job.peaks_csv;
+        fallback.assignments_csv = job.assignments_csv;
+        active_spectral_products_[fallback.label] = std::move(fallback);
     }
 
     if (spectrum_nucleus_choice_ != nullptr) {
@@ -1755,12 +1783,12 @@ void AppWindow::load_selected_job_visuals() {
         std::vector<std::string> ordered_labels;
         const std::vector<std::string> preferred = {"1H", "13C", "19F"};
         for (const auto &label : preferred) {
-            auto entry = active_nucleus_results_.find(label);
-            if (entry != active_nucleus_results_.end() && !entry->second.spectrum_csv.empty()) {
+            auto entry = active_spectral_products_.find(label);
+            if (entry != active_spectral_products_.end() && !entry->second.spectrum_csv.empty()) {
                 ordered_labels.push_back(label);
             }
         }
-        for (const auto &entry : active_nucleus_results_) {
+        for (const auto &entry : active_spectral_products_) {
             if (std::find(ordered_labels.begin(), ordered_labels.end(), entry.first) == ordered_labels.end()
                 && !entry.second.spectrum_csv.empty()) {
                 ordered_labels.push_back(entry.first);
