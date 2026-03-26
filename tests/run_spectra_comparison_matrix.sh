@@ -83,6 +83,14 @@ while IFS=, read -r difficulty case_name workflow target_product nucleus_arg smi
     echo "warning: computed reference file not found on disk for $case_name: $computed_ref"
   fi
 
+  # [quality] Validate predicted peak positions against reference tolerances.
+  if command -v python3 &>/dev/null; then
+    if ! python3 tests/check_peak_quality.py "$case_name" "$run_dir"; then
+      echo "error: peak quality check failed for $case_name (see above)" >&2
+      exit 1
+    fi
+  fi
+
   echo "  ok compare: $case_name -> workflow=$workflow product=$target_product"
   pass_count=$((pass_count + 1))
 done < <(tail -n +2 "$CASES_CSV")
@@ -90,3 +98,5 @@ done < <(tail -n +2 "$CASES_CSV")
 echo "Comparison matrix checks completed (${pass_count} cases)."
 
 echo "Tip: open tests/spectra_comparison_cases.csv for exact SMILES/file mapping."
+echo "Tip: run 'pytest tests/test_backend.py -v' for backend unit tests."
+echo "Tip: run 'bash tests/test_spectrum_parser.sh' for parser edge-case tests."

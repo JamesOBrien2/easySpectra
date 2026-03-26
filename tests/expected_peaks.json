@@ -1,0 +1,51 @@
+{
+  "_comment": "Reference peak positions for spectrum quality validation in the integration test matrix. Each entry maps a case_name (from spectra_comparison_cases.csv) to a list of expected peaks that MUST appear in the predicted output within the given tolerance. These are empirical tolerances chosen to catch major regressions without being overly sensitive to the inherent imprecision of empirical shift rules.",
+  "ethanol_nmr": {
+    "peaks_file": "peaks_1h.csv",
+    "expected_peaks_ppm": [1.2, 3.7],
+    "tolerance_ppm": 0.6,
+    "notes": "1H CCO: CH3 ~1.19 ppm, CH2 ~3.69 ppm"
+  },
+  "isobutylbenzene_nmr": {
+    "peaks_file": "peaks_1h.csv",
+    "expected_peaks_ppm": [7.2, 2.4],
+    "tolerance_ppm": 0.6,
+    "notes": "1H CC(C)Cc1ccccc1: ArH ~7.2 ppm, ArCH2 ~2.45 ppm"
+  },
+  "easy_13c_ethanol": {
+    "peaks_file": "peaks_13c.csv",
+    "expected_peaks_ppm": [18.0, 57.0],
+    "tolerance_ppm": 6.0,
+    "notes": "13C CCO: CH3 ~17.5 ppm, CH2OH ~56.8 ppm"
+  },
+  "medium_13c_isobutylbenzene": {
+    "peaks_file": "peaks_13c.csv",
+    "expected_peaks_ppm": [128.0, 30.0],
+    "tolerance_ppm": 8.0,
+    "notes": "13C aromatic ~126-130 ppm, aliphatic ~22-46 ppm"
+  },
+  "easy_19f_fluoroethane": {
+    "peaks_file": "peaks_19f.csv",
+    "expected_peaks_ppm": [-218.0],
+    "tolerance_ppm": 20.0,
+    "notes": "19F CCF: alkyl F ~-219.8 ppm (literature)"
+  },
+  "medium_19f_fluorobenzene": {
+    "peaks_file": "peaks_19f.csv",
+    "expected_peaks_ppm": [-113.0],
+    "tolerance_ppm": 15.0,
+    "notes": "19F Fc1ccccc1: aryl F ~-113.0 ppm (literature)"
+  },
+  "easy_31p_trimethylphosphine_oxide": {
+    "peaks_file": "peaks_31p.csv",
+    "expected_peaks_ppm": [26.0],
+    "tolerance_ppm": 12.0,
+    "notes": "31P CP(=O)(C)C: ~26.5 ppm (literature)"
+  },
+  "medium_31p_triethyl_phosphate": {
+    "peaks_file": "peaks_31p.csv",
+    "expected_peaks_ppm": [-1.0],
+    "tolerance_ppm": 12.0,
+    "notes": "31P CCOP(=O)(OCC)OCC: ~-1.0 ppm (literature)"
+  }
+}
