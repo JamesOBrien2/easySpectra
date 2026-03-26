@@ -39,6 +39,8 @@ struct QueuedJob {
     std::string structure_bonds_csv;
     std::string structure_xyz;
     std::string spectra_manifest_csv;
+    std::string reaction_summary_json;
+    std::string structure_product_svg;
     std::string message;
     std::string progress_stage;
     std::string progress_message;
@@ -105,6 +107,8 @@ class AppWindow : public Fl_Double_Window {
     void apply_active_experimental_overlay();
 
     ColoredInputEditor *input_box_ = nullptr;
+    Fl_Box *compare_input_label_ = nullptr;
+    ColoredInputEditor *compare_input_box_ = nullptr;
     Fl_Input *job_name_input_ = nullptr;
     Fl_Choice *workflow_choice_ = nullptr;
     Fl_Choice *solvent_choice_ = nullptr;
