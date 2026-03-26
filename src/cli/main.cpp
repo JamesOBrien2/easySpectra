@@ -10,12 +10,16 @@ namespace {
 void print_help() {
     std::cout << "easySpectra CLI\n"
               << "Usage:\n"
-              << "  easynmr --input <value> [options]\n\n"
+              << "  easynmr --input <value> [options]\n"
+              << "  easynmr --input <reactant> --compare <product> [options]\n\n"
               << "Options:\n"
               << "  --input <value>                Input content (e.g. SMILES)\n"
               << "  --input-format <smiles|mol|sdf|xyz>\n"
+              << "  --compare <value>              Second structure for reaction comparison\n"
+              << "                                 (implies --workflow compare)\n"
+              << "  --compare-format <smiles|mol|sdf|xyz>\n"
               << "  --name <job_name>\n"
-              << "  --workflow <all|nmr|cd>\n"
+              << "  --workflow <all|nmr|cd|compare>\n"
               << "  --output-dir <path>\n"
               << "  --solvent <cdcl3|dmso|h2o>\n"
               << "  --nucleus <auto|1H|13C|19F|31P>\n"
@@ -67,9 +71,21 @@ int main(int argc, char **argv) {
         if (arg == "--workflow") {
             config.workflow_kind = easynmr::workflow_kind_from_string(take_value(arg));
             if (config.workflow_kind == easynmr::WorkflowKind::Unknown) {
-                std::cerr << "Unsupported --workflow value (supported: all, nmr, cd)\n";
+                std::cerr << "Unsupported --workflow value (supported: all, nmr, cd, compare)\n";
                 return 1;
             }
+            continue;
+        }
+        if (arg == "--compare") {
+            config.compare_input_value = take_value(arg);
+            // Implicitly enable compare workflow unless user specified another kind.
+            if (config.workflow_kind == easynmr::WorkflowKind::All) {
+                config.workflow_kind = easynmr::WorkflowKind::Compare;
+            }
+            continue;
+        }
+        if (arg == "--compare-format") {
+            config.compare_input_format = easynmr::input_format_from_string(take_value(arg));
             continue;
         }
         if (arg == "--output-dir") {
@@ -154,6 +170,10 @@ int main(int argc, char **argv) {
               << "Structure atoms CSV: " << result.structure_atoms_csv << "\n"
               << "Structure bonds CSV: " << result.structure_bonds_csv << "\n"
               << "Audit JSON: " << result.audit_json << "\n";
+    if (!result.reaction_summary_json.empty()) {
+        std::cout << "Reaction summary JSON: " << result.reaction_summary_json << "\n"
+                  << "Product structure SVG: " << result.structure_product_svg << "\n";
+    }
 
     if (!result.warnings.empty()) {
         std::cout << "Warnings:\n";

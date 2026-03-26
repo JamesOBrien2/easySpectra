@@ -1358,6 +1358,9 @@ std::string workflow_display_name(WorkflowKind kind) {
     if (kind == WorkflowKind::Cd) {
         return "CD";
     }
+    if (kind == WorkflowKind::Compare) {
+        return "COMPARE";
+    }
     return "NMR";
 }
 
@@ -1462,10 +1465,31 @@ AppWindow::AppWindow(int w, int h, const char *title)
     workflow_choice_->add("all");
     workflow_choice_->add("nmr");
     workflow_choice_->add("cd");
+    workflow_choice_->add("compare");
     workflow_choice_->value(0);
     workflow_choice_->box(FL_DOWN_BOX);
     workflow_choice_->color(ui(255, 255, 255));
-    workflow_choice_->callback(on_preview_cb, this);
+    workflow_choice_->callback([](Fl_Widget *w, void *ud) {
+        auto *self = static_cast<AppWindow *>(ud);
+        const Fl_Choice *ch = static_cast<Fl_Choice *>(w);
+        const char *sel = ch->text(ch->value());
+        const bool is_compare = sel != nullptr && std::string(sel) == "compare";
+        if (self->compare_input_label_ != nullptr) {
+            if (is_compare) {
+                self->compare_input_label_->show();
+            } else {
+                self->compare_input_label_->hide();
+            }
+        }
+        if (self->compare_input_box_ != nullptr) {
+            if (is_compare) {
+                self->compare_input_box_->show();
+            } else {
+                self->compare_input_box_->hide();
+            }
+        }
+        on_preview_cb(w, ud);
+    }, this);
 
     auto *solvent_label = new Fl_Box(panel_x + 116, panel_y + 82, 208, 16, "Solvent");
     solvent_label->box(FL_NO_BOX);
@@ -1493,6 +1517,20 @@ AppWindow::AppWindow(int w, int h, const char *title)
     input_box_->set_syntax_mode(InputSyntaxMode::SmilesLike);
     input_box_->when(FL_WHEN_CHANGED | FL_WHEN_ENTER_KEY);
     input_box_->callback(on_preview_cb, this);
+
+    compare_input_label_ = new Fl_Box(panel_x + 10, panel_y + 212, panel_w - 20, 16, "Product SMILES");
+    compare_input_label_->box(FL_NO_BOX);
+    compare_input_label_->labelsize(12);
+    compare_input_label_->labelcolor(ui(86, 97, 112));
+    compare_input_label_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    compare_input_label_->hide();
+
+    compare_input_box_ = new ColoredInputEditor(panel_x + 10, panel_y + 228, panel_w - 20, 48);
+    compare_input_box_->value("");
+    compare_input_box_->set_syntax_mode(InputSyntaxMode::SmilesLike);
+    compare_input_box_->when(FL_WHEN_CHANGED | FL_WHEN_ENTER_KEY);
+    compare_input_box_->callback(on_preview_cb, this);
+    compare_input_box_->hide();
 
     auto *structure_title = new Fl_Box(panel_x + 10, panel_y + 216, panel_w - 214, 20, "Interactive Structure");
     structure_title->box(FL_NO_BOX);
@@ -2064,6 +2102,11 @@ void AppWindow::queue_current_input() {
             job.config.solvent = solvent ? solvent : "cdcl3";
             job.config.nucleus = "auto";
             job.config.line_shape = "lorentzian";
+            if (workflow_kind == WorkflowKind::Compare && compare_input_box_ != nullptr) {
+                const char *cmp_ptr = compare_input_box_->value();
+                job.config.compare_input_value = cmp_ptr != nullptr ? cmp_ptr : "";
+                job.config.compare_input_format = InputFormat::Smiles;
+            }
             job.id = "q" + std::to_string(jobs_.size() + 1);
             jobs_.push_back(std::move(job));
             if (!queued_any) {
@@ -4021,7 +4064,32 @@ void AppWindow::refresh_workflow_browser(const QueuedJob *job) {
                << ": " << steps[static_cast<std::size_t>(active_idx)].label
                << " | " << steps[static_cast<std::size_t>(active_idx)].method;
     } else if (job->status == "done") {
-        detail << "Completed all workflow steps successfully.";
+        if (job->config.workflow_kind == WorkflowKind::Compare && !job->reaction_summary_json.empty()) {
+            // Extract overall indicator from JSON for a one-line summary.
+            const std::string &rsj = job->reaction_summary_json;
+            auto extract = [&](const std::string &key) -> std::string {
+                const std::string search = "\"" + key + "\": \"";
+                auto pos = rsj.find(search);
+                if (pos == std::string::npos) {
+                    return {};
+                }
+                pos += search.size();
+                auto end = rsj.find('"', pos);
+                return end == std::string::npos ? rsj.substr(pos) : rsj.substr(pos, end - pos);
+            };
+            const std::string indicator = extract("overall");
+            const std::string description = extract("description");
+            if (!indicator.empty()) {
+                detail << "Result: " << indicator;
+                if (!description.empty()) {
+                    detail << " | " << description;
+                }
+            } else {
+                detail << "Comparison complete. See output directory for reaction_summary.json.";
+            }
+        } else {
+            detail << "Completed all workflow steps successfully.";
+        }
     } else if (job->status == "failed") {
         detail << "Workflow ended with an error.";
     } else {
@@ -4053,6 +4121,8 @@ void AppWindow::run_worker_loop() {
                         jobs_[next_index].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> CD bands";
                     } else if (jobs_[next_index].config.workflow_kind == WorkflowKind::All) {
                         jobs_[next_index].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> NMR + CD products";
+                    } else if (jobs_[next_index].config.workflow_kind == WorkflowKind::Compare) {
+                        jobs_[next_index].message = "Reactant + product conformers -> NMR prediction -> spectral comparison";
                     } else {
                         const std::string nucleus_mode = (normalize_nucleus_label(jobs_[next_index].config.nucleus) == "1H"
                                                           && jobs_[next_index].config.nucleus != "auto")
@@ -4073,6 +4143,8 @@ void AppWindow::run_worker_loop() {
                             jobs_[i].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> CD bands";
                         } else if (jobs_[i].config.workflow_kind == WorkflowKind::All) {
                             jobs_[i].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> NMR + CD products";
+                        } else if (jobs_[i].config.workflow_kind == WorkflowKind::Compare) {
+                            jobs_[i].message = "Reactant + product conformers -> NMR prediction -> spectral comparison";
                         } else {
                             const std::string nucleus_mode = (normalize_nucleus_label(jobs_[i].config.nucleus) == "1H"
                                                               && jobs_[i].config.nucleus != "auto")
@@ -4143,6 +4215,8 @@ void AppWindow::run_worker_loop() {
                 job.structure_atoms_csv = result.structure_atoms_csv;
                 job.structure_bonds_csv = result.structure_bonds_csv;
                 job.structure_xyz = result.structure_xyz;
+                job.reaction_summary_json = result.reaction_summary_json;
+                job.structure_product_svg = result.structure_product_svg;
                 if (result.status == "ok") {
                     job.message = "done";
                     job.progress_stage = "done";

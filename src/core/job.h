@@ -50,6 +50,7 @@ enum class WorkflowKind {
     All,
     Nmr,
     Cd,
+    Compare,
     Unknown
 };
 
@@ -61,6 +62,8 @@ inline std::string to_string(WorkflowKind kind) {
         return "nmr";
     case WorkflowKind::Cd:
         return "cd";
+    case WorkflowKind::Compare:
+        return "compare";
     default:
         return "unknown";
     }
@@ -80,6 +83,9 @@ inline WorkflowKind workflow_kind_from_string(const std::string &value) {
     if (lowered == "cd" || lowered == "ecd") {
         return WorkflowKind::Cd;
     }
+    if (lowered == "compare") {
+        return WorkflowKind::Compare;
+    }
     return WorkflowKind::Unknown;
 }
 
@@ -88,6 +94,9 @@ struct JobConfig {
     std::string job_name = "untitled";
     std::string input_value;
     InputFormat input_format = InputFormat::Smiles;
+    // Second structure for compare workflow.
+    std::string compare_input_value;
+    InputFormat compare_input_format = InputFormat::Smiles;
     std::string nucleus = "auto";
     std::string solvent = "cdcl3";
     double frequency_mhz = 400.0;
@@ -120,6 +129,11 @@ struct JobOutputs {
     std::string structure_xyz;
     std::string spectra_manifest_csv;
     std::string audit_json;
+    // Compare workflow extras.
+    std::string reaction_summary_json;
+    std::string structure_product_svg;
+    std::string structure_atoms_product_csv;
+    std::string structure_bonds_product_csv;
     std::vector<std::string> warnings;
 };
 

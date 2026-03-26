@@ -47,6 +47,14 @@ MULTIPLICITY_LABELS = {
     5: "quintet",
 }
 
+# Tolerance used when matching reactant peaks to product peaks per nucleus (ppm).
+COMPARE_TOLERANCE_PPM: Dict[str, float] = {
+    "1h": 0.30,
+    "13c": 2.00,
+    "19f": 5.00,
+    "31p": 5.00,
+}
+
 NUCLEUS_ALIASES = {
     "auto": "auto",
     "all": "auto",
@@ -1269,6 +1277,225 @@ def write_spectra_manifest(
             writer.writerow([nucleus_label, str(spectrum_csv), str(peaks_csv), str(assignments_csv)])
 
 
+# ---------------------------------------------------------------------------
+# Reaction comparison helpers
+# ---------------------------------------------------------------------------
+
+def _resample_onto_axis(
+    data: Sequence[Tuple[float, float]],
+    ppm_axis: np.ndarray,
+) -> np.ndarray:
+    """Linearly interpolate a spectrum onto a uniform ppm_axis."""
+    if not data:
+        return np.zeros_like(ppm_axis)
+    x = np.array([p[0] for p in data], dtype=float)
+    y = np.array([p[1] for p in data], dtype=float)
+    # np.interp requires ascending x; spectra are stored high→low, so flip.
+    if len(x) > 1 and x[0] > x[-1]:
+        x = x[::-1]
+        y = y[::-1]
+    return np.interp(ppm_axis, x, y, left=0.0, right=0.0)
+
+
+def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    """Cosine similarity in [0, 1]; 1 = identical spectra."""
+    norm_a = float(np.linalg.norm(a))
+    norm_b = float(np.linalg.norm(b))
+    if norm_a <= 0.0 or norm_b <= 0.0:
+        return 0.0
+    return max(0.0, min(1.0, float(np.dot(a, b) / (norm_a * norm_b))))
+
+
+def _match_peaks_greedy(
+    reactant_groups: List[GroupPrediction],
+    product_groups: List[GroupPrediction],
+    tolerance_ppm: float,
+) -> Tuple[List[dict], List[dict], List[dict]]:
+    """Greedy nearest-peak matching within tolerance.
+
+    Returns (matched, lost, new_peaks):
+      matched   — peaks present in both; status = "retained" or "shifted"
+      lost      — reactant peaks with no product match within tolerance
+      new_peaks — product peaks with no reactant match within tolerance
+    """
+    r_peaks = sorted(reactant_groups, key=lambda g: g.shift_ppm)
+    p_peaks = sorted(product_groups, key=lambda g: g.shift_ppm)
+
+    r_used = [False] * len(r_peaks)
+    p_used = [False] * len(p_peaks)
+    matched: List[dict] = []
+
+    for r_idx, r_group in enumerate(r_peaks):
+        best_p_idx: Optional[int] = None
+        best_delta = float("inf")
+        for p_idx, p_group in enumerate(p_peaks):
+            if p_used[p_idx]:
+                continue
+            delta = abs(r_group.shift_ppm - p_group.shift_ppm)
+            if delta <= tolerance_ppm and delta < best_delta:
+                best_delta = delta
+                best_p_idx = p_idx
+        if best_p_idx is not None:
+            r_used[r_idx] = True
+            p_used[best_p_idx] = True
+            signed_delta = r_peaks[r_idx].shift_ppm - p_peaks[best_p_idx].shift_ppm
+            status = "retained" if abs(signed_delta) <= tolerance_ppm * 0.3 else "shifted"
+            matched.append({
+                "reactant_ppm": round(r_peaks[r_idx].shift_ppm, 4),
+                "product_ppm": round(p_peaks[best_p_idx].shift_ppm, 4),
+                "delta_ppm": round(signed_delta, 4),
+                "status": status,
+                "reactant_multiplicity": r_peaks[r_idx].multiplicity,
+                "product_multiplicity": p_peaks[best_p_idx].multiplicity,
+                "reactant_integral": round(r_peaks[r_idx].integral, 2),
+                "product_integral": round(p_peaks[best_p_idx].integral, 2),
+            })
+
+    lost = [
+        {
+            "ppm": round(g.shift_ppm, 4),
+            "multiplicity": g.multiplicity,
+            "integral": round(g.integral, 2),
+            "status": "lost",
+        }
+        for i, g in enumerate(r_peaks) if not r_used[i]
+    ]
+    new_peaks = [
+        {
+            "ppm": round(g.shift_ppm, 4),
+            "multiplicity": g.multiplicity,
+            "integral": round(g.integral, 2),
+            "status": "new",
+        }
+        for i, g in enumerate(p_peaks) if not p_used[i]
+    ]
+    return matched, lost, new_peaks
+
+
+def compute_spectral_comparison(
+    reactant_groups: List[GroupPrediction],
+    product_groups: List[GroupPrediction],
+    reactant_spectrum: List[Tuple[float, float]],
+    product_spectrum: List[Tuple[float, float]],
+    nucleus: str,
+) -> dict:
+    """Compare two NMR predictions; return similarity score and peak diff."""
+    tolerance = COMPARE_TOLERANCE_PPM.get(nucleus, 0.5)
+    matched, lost, new_peaks = _match_peaks_greedy(reactant_groups, product_groups, tolerance)
+
+    # Build a common ppm axis for spectral similarity.
+    all_ppm = [p[0] for p in reactant_spectrum] + [p[0] for p in product_spectrum]
+    if all_ppm:
+        ppm_axis = np.linspace(max(all_ppm), min(all_ppm), 3000)
+        r_vec = _resample_onto_axis(reactant_spectrum, ppm_axis)
+        p_vec = _resample_onto_axis(product_spectrum, ppm_axis)
+        similarity = _cosine_similarity(r_vec, p_vec)
+    else:
+        similarity = 0.0
+
+    n_retained = sum(1 for m in matched if m["status"] == "retained")
+    n_shifted = sum(1 for m in matched if m["status"] == "shifted")
+    indicator = _reaction_indicator(similarity, len(lost), len(new_peaks), n_shifted)
+
+    return {
+        "spectral_similarity_pct": round(similarity * 100.0, 1),
+        "retained_peaks": n_retained,
+        "shifted_peaks": n_shifted,
+        "lost_peaks": len(lost),
+        "new_peaks": len(new_peaks),
+        "reaction_indicator": indicator,
+        "matched_peaks": matched,
+        "lost_peak_details": lost,
+        "new_peak_details": new_peaks,
+    }
+
+
+def _reaction_indicator(similarity: float, n_lost: int, n_new: int, n_shifted: int) -> str:
+    if similarity >= 0.92 and n_lost == 0 and n_new == 0 and n_shifted == 0:
+        return "no_reaction"
+    if similarity < 0.60 or (n_lost + n_new) >= 2:
+        return "reaction_likely"
+    return "inconclusive"
+
+
+def _overall_reaction_indicator(results_by_nucleus: Dict[str, dict]) -> str:
+    if not results_by_nucleus:
+        return "inconclusive"
+    indicators = [r.get("reaction_indicator", "inconclusive") for r in results_by_nucleus.values()]
+    if any(i == "reaction_likely" for i in indicators):
+        return "reaction_likely"
+    if all(i == "no_reaction" for i in indicators):
+        return "no_reaction"
+    return "inconclusive"
+
+
+def _reaction_description(indicator: str) -> str:
+    return {
+        "reaction_likely": (
+            "Significant spectral differences detected — reaction likely occurred."
+        ),
+        "no_reaction": (
+            "Spectra are highly similar — reaction likely did not occur."
+        ),
+        "inconclusive": (
+            "Moderate spectral differences — result inconclusive; inspect overlays manually."
+        ),
+    }.get(indicator, "Unknown indicator.")
+
+
+def write_compare_spectrum_csv(
+    path: Path,
+    reactant_data: Sequence[Tuple[float, float]],
+    product_data: Sequence[Tuple[float, float]],
+) -> None:
+    """Write a 3-column overlay CSV: ppm, reactant_intensity, product_intensity."""
+    if not reactant_data and not product_data:
+        return
+    all_ppm = [p[0] for p in reactant_data] + [p[0] for p in product_data]
+    ppm_axis = np.linspace(max(all_ppm), min(all_ppm), 6000)
+    r_vals = _resample_onto_axis(reactant_data, ppm_axis)
+    p_vals = _resample_onto_axis(product_data, ppm_axis)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["ppm", "reactant_intensity", "product_intensity"])
+        for ppm, r, p in zip(ppm_axis.tolist(), r_vals.tolist(), p_vals.tolist()):
+            writer.writerow([f"{ppm:.6f}", f"{r:.8f}", f"{p:.8f}"])
+
+
+def write_peaks_diff_csv(
+    path: Path,
+    matched: List[dict],
+    lost: List[dict],
+    new_peaks: List[dict],
+) -> None:
+    """Write peak-diff table with status annotations."""
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow([
+            "status", "reactant_ppm", "product_ppm", "delta_ppm",
+            "reactant_multiplicity", "product_multiplicity",
+            "reactant_integral", "product_integral",
+        ])
+        for m in matched:
+            writer.writerow([
+                m["status"], m["reactant_ppm"], m["product_ppm"], m["delta_ppm"],
+                m["reactant_multiplicity"], m["product_multiplicity"],
+                m["reactant_integral"], m["product_integral"],
+            ])
+        for row in lost:
+            writer.writerow([
+                "lost", row["ppm"], "", "",
+                row.get("multiplicity", ""), "",
+                row.get("integral", ""), "",
+            ])
+        for row in new_peaks:
+            writer.writerow([
+                "new", "", row["ppm"], "",
+                "", row.get("multiplicity", ""),
+                "", row.get("integral", ""),
+            ])
+
+
 def main() -> int:
     args = parse_args()
 
@@ -1309,10 +1536,10 @@ def main() -> int:
     progress_path = Path(str(request.get("progress_json", output_dir / "progress.json")))
     write_progress(progress_path, "initializing", "Starting easySpectra workflow", 0.01)
 
-    if workflow_kind not in {"all", "nmr", "cd"}:
+    if workflow_kind not in {"all", "nmr", "cd", "compare"}:
         message = (
             f"Unsupported workflow kind '{workflow_kind}'. "
-            "Currently available workflows: all, nmr, cd."
+            "Currently available workflows: all, nmr, cd, compare."
         )
         write_progress(progress_path, "failed", message, 1.0)
         response = {
@@ -1373,6 +1600,180 @@ def main() -> int:
             "structure_xyz": str(structure_xyz) if structure_xyz is not None else "",
             "progress_json": str(progress_path),
             "warnings": warnings,
+        }
+        response_path.write_text(json.dumps(response, indent=2), encoding="utf-8")
+        return 0
+
+    # ── Compare workflow ─────────────────────────────────────────────────────
+    if workflow_kind == "compare":
+        compare_input_obj = request.get("compare_input", {})
+        compare_format = str(compare_input_obj.get("format", "smiles")).lower()
+        compare_value = str(compare_input_obj.get("value", ""))
+
+        if not compare_value:
+            message = "compare workflow requires 'compare_input.value' in the request."
+            write_progress(progress_path, "failed", message, 1.0)
+            response_path.write_text(
+                json.dumps({"status": "failed", "message": message,
+                            "output_dir": str(output_dir), "warnings": warnings}, indent=2),
+                encoding="utf-8",
+            )
+            return 0
+
+        write_progress(progress_path, "parse_input", "Parsing product structure", 0.08)
+        warnings_product: List[str] = []
+        try:
+            mol_product = load_molecule(compare_format, compare_value, warnings_product)
+        except Exception as exc:
+            message = f"Product input parsing failed: {exc}"
+            write_progress(progress_path, "failed", message, 1.0)
+            response_path.write_text(
+                json.dumps({"status": "failed", "message": message,
+                            "output_dir": str(output_dir), "warnings": warnings}, indent=2),
+                encoding="utf-8",
+            )
+            return 0
+
+        # Write product 2D structure.
+        struct_svg_product = output_dir / "structure_product.svg"
+        struct_atoms_product = output_dir / "structure_atoms_product.csv"
+        struct_bonds_product = output_dir / "structure_bonds_product.csv"
+        write_progress(progress_path, "structure_2d", "Generating product 2D depiction", 0.12)
+        try:
+            write_structure_svg(mol_product, struct_svg_product)
+            write_structure_geometry_csv(mol_product, struct_atoms_product, struct_bonds_product)
+        except Exception:
+            warnings_product.append("Could not generate 2D structure visualization for product.")
+
+        # Determine which nuclei to compare.
+        nuclei_order = ["1h", "13c", "19f", "31p"]
+        available_reactant = set(nuclei_present(mol))
+        available_product = set(nuclei_present(mol_product))
+        if nucleus_request == "auto":
+            all_nuclei = sorted(
+                available_reactant | available_product,
+                key=lambda n: nuclei_order.index(n) if n in nuclei_order else 99,
+            )
+        else:
+            all_nuclei = [nucleus_request]
+
+        # Conformer generation and optimisation — reactant.
+        seed_r = hash_seed(job_id, input_value)
+        seed_p = hash_seed(job_id, compare_value)
+        write_progress(progress_path, "conformer_generation", "Embedding reactant conformers", 0.18)
+        conf_ids_r = embed_conformers(mol, max_conformers=max_conformers, seed=seed_r, warnings=warnings)
+        results_r = optimize_conformers(mol, conf_ids_r, solvent, output_dir / "xtb_reactant",
+                                        warnings, progress_path=None)
+        sel_r, w_r, rel_r = select_conformers(results_r, energy_window_kcal, boltzmann_cutoff)
+
+        # Conformer generation and optimisation — product.
+        write_progress(progress_path, "conformer_generation", "Embedding product conformers", 0.45)
+        conf_ids_p = embed_conformers(mol_product, max_conformers=max_conformers, seed=seed_p,
+                                      warnings=warnings_product)
+        results_p = optimize_conformers(mol_product, conf_ids_p, solvent, output_dir / "xtb_product",
+                                        warnings_product, progress_path=None)
+        sel_p, w_p, rel_p = select_conformers(results_p, energy_window_kcal, boltzmann_cutoff)
+
+        spectra_rows: List[Tuple[str, Path, Path, Path]] = []
+        comparison_results: Dict[str, dict] = {}
+
+        write_progress(progress_path, "nmr_parameter_estimation",
+                       "Predicting and comparing NMR spectra", 0.70)
+
+        for nucleus in all_nuclei:
+            has_r = nucleus in available_reactant
+            has_p = nucleus in available_product
+            nucleus_label = NUCLEUS_LABEL.get(nucleus, nucleus.upper())
+            nucleus_symbol = NUCLEUS_SYMBOL.get(nucleus, "H")
+
+            groups_r: List[GroupPrediction] = []
+            groups_p: List[GroupPrediction] = []
+            spectrum_r: List[Tuple[float, float]] = []
+            spectrum_p: List[Tuple[float, float]] = []
+
+            if has_r:
+                groups_r = build_group_predictions(mol, sel_r, w_r, frequency_mhz, nucleus)
+                spectrum_r = simulate_spectrum(groups_r, frequency_mhz, line_shape, fwhm_hz, nucleus)
+                spec_csv_r = output_dir / f"spectrum_{nucleus}_reactant.csv"
+                peaks_csv_r = output_dir / f"peaks_{nucleus}_reactant.csv"
+                asgn_json_r = output_dir / f"assignments_{nucleus}_reactant.json"
+                asgn_csv_r = output_dir / f"assignments_{nucleus}_reactant.csv"
+                write_spectrum_csv(spec_csv_r, spectrum_r)
+                write_peaks_csv(peaks_csv_r, groups_r, nucleus_symbol)
+                write_assignments(asgn_json_r, asgn_csv_r, groups_r, nucleus_symbol)
+                spectra_rows.append((f"{nucleus_label} (Reactant)", spec_csv_r,
+                                     peaks_csv_r, asgn_csv_r))
+
+            if has_p:
+                groups_p = build_group_predictions(mol_product, sel_p, w_p, frequency_mhz, nucleus)
+                spectrum_p = simulate_spectrum(groups_p, frequency_mhz, line_shape, fwhm_hz, nucleus)
+                spec_csv_p = output_dir / f"spectrum_{nucleus}_product.csv"
+                peaks_csv_p = output_dir / f"peaks_{nucleus}_product.csv"
+                asgn_json_p = output_dir / f"assignments_{nucleus}_product.json"
+                asgn_csv_p = output_dir / f"assignments_{nucleus}_product.csv"
+                write_spectrum_csv(spec_csv_p, spectrum_p)
+                write_peaks_csv(peaks_csv_p, groups_p, nucleus_symbol)
+                write_assignments(asgn_json_p, asgn_csv_p, groups_p, nucleus_symbol)
+                spectra_rows.append((f"{nucleus_label} (Product)", spec_csv_p,
+                                     peaks_csv_p, asgn_csv_p))
+
+            if has_r and has_p and spectrum_r and spectrum_p:
+                cmp = compute_spectral_comparison(groups_r, groups_p, spectrum_r, spectrum_p, nucleus)
+                compare_spec_csv = output_dir / f"spectrum_compare_{nucleus}.csv"
+                peaks_diff_csv = output_dir / f"peaks_diff_{nucleus}.csv"
+                write_compare_spectrum_csv(compare_spec_csv, spectrum_r, spectrum_p)
+                write_peaks_diff_csv(peaks_diff_csv, cmp["matched_peaks"],
+                                     cmp["lost_peak_details"], cmp["new_peak_details"])
+                comparison_results[nucleus_label] = cmp
+            elif has_r and not has_p:
+                comparison_results[nucleus_label] = {
+                    "spectral_similarity_pct": 0.0,
+                    "retained_peaks": 0, "shifted_peaks": 0,
+                    "lost_peaks": len(groups_r), "new_peaks": 0,
+                    "reaction_indicator": "reaction_likely",
+                    "note": f"{nucleus_label} present in reactant but absent in product.",
+                }
+            elif has_p and not has_r:
+                comparison_results[nucleus_label] = {
+                    "spectral_similarity_pct": 0.0,
+                    "retained_peaks": 0, "shifted_peaks": 0,
+                    "lost_peaks": 0, "new_peaks": len(groups_p),
+                    "reaction_indicator": "reaction_likely",
+                    "note": f"{nucleus_label} absent in reactant but present in product.",
+                }
+
+        spectra_manifest_csv = output_dir / "spectra_manifest.csv"
+        write_spectra_manifest(spectra_manifest_csv, spectra_rows)
+
+        overall = _overall_reaction_indicator(comparison_results)
+        reaction_summary = {
+            "workflow": "compare",
+            "reactant_formula": Chem.rdMolDescriptors.CalcMolFormula(Chem.RemoveHs(mol)),
+            "product_formula": Chem.rdMolDescriptors.CalcMolFormula(Chem.RemoveHs(mol_product)),
+            "nuclei": list(comparison_results.keys()),
+            "results": comparison_results,
+            "overall_indicator": overall,
+            "overall_description": _reaction_description(overall),
+        }
+        reaction_summary_json = output_dir / "reaction_summary.json"
+        reaction_summary_json.write_text(json.dumps(reaction_summary, indent=2), encoding="utf-8")
+
+        write_progress(progress_path, "done", "Comparison complete", 1.0)
+        response = {
+            "status": "ok",
+            "message": "Comparison complete",
+            "workflow": {"kind": "compare"},
+            "output_dir": str(output_dir),
+            "spectra_manifest_csv": str(spectra_manifest_csv),
+            "reaction_summary_json": str(reaction_summary_json),
+            "structure_svg": str(structure_svg),
+            "structure_atoms_csv": str(structure_atoms_csv),
+            "structure_bonds_csv": str(structure_bonds_csv),
+            "structure_product_svg": str(struct_svg_product),
+            "structure_atoms_product_csv": str(struct_atoms_product),
+            "structure_bonds_product_csv": str(struct_bonds_product),
+            "progress_json": str(progress_path),
+            "warnings": warnings + warnings_product,
         }
         response_path.write_text(json.dumps(response, indent=2), encoding="utf-8")
         return 0

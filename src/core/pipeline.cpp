@@ -157,6 +157,12 @@ JobOutputs Pipeline::run_impl(
         request_file << "    \"format\": \"" << to_string(config.input_format) << "\",\n";
         request_file << "    \"value\": \"" << escape_json(config.input_value) << "\"\n";
         request_file << "  },\n";
+        if (config.workflow_kind == WorkflowKind::Compare) {
+            request_file << "  \"compare_input\": {\n";
+            request_file << "    \"format\": \"" << to_string(config.compare_input_format) << "\",\n";
+            request_file << "    \"value\": \"" << escape_json(config.compare_input_value) << "\"\n";
+            request_file << "  },\n";
+        }
         request_file << "  \"settings\": {\n";
         request_file << "    \"frequency_mhz\": " << config.frequency_mhz << ",\n";
         request_file << "    \"solvent\": \"" << escape_json(config.solvent) << "\",\n";
@@ -247,6 +253,10 @@ JobOutputs Pipeline::run_impl(
     outputs.structure_xyz = extract_string_field(json, "structure_xyz");
     outputs.spectra_manifest_csv = extract_string_field(json, "spectra_manifest_csv");
     outputs.audit_json = extract_string_field(json, "audit_json");
+    outputs.reaction_summary_json = extract_string_field(json, "reaction_summary_json");
+    outputs.structure_product_svg = extract_string_field(json, "structure_product_svg");
+    outputs.structure_atoms_product_csv = extract_string_field(json, "structure_atoms_product_csv");
+    outputs.structure_bonds_product_csv = extract_string_field(json, "structure_bonds_product_csv");
     outputs.warnings = extract_warnings(json);
 
     if (outputs.status.empty()) {
