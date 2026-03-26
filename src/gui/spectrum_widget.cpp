@@ -43,13 +43,20 @@ struct SpectrumPalette {
     Fl_Color axis = rgb(187, 202, 222);
     Fl_Color trace_soft = rgb(166, 184, 216);
     Fl_Color trace_main = rgb(112, 129, 160);
+    Fl_Color compare_soft = rgb(227, 205, 188);
+    Fl_Color compare_main = rgb(196, 157, 128);
     Fl_Color marker = rgb(206, 218, 235);
     Fl_Color marker_selected = rgb(143, 194, 186);
     Fl_Color marker_band = rgb(221, 239, 236);
+    Fl_Color compare_marker = rgb(214, 185, 164);
+    Fl_Color compare_marker_selected = rgb(183, 138, 106);
     Fl_Color reference = rgb(179, 166, 208);
     Fl_Color reference_label_bg = rgb(241, 236, 250);
     Fl_Color experimental_soft = rgb(236, 192, 163);
     Fl_Color experimental_main = rgb(206, 149, 112);
+    Fl_Color shift_down = rgb(222, 154, 144);
+    Fl_Color shift_up = rgb(141, 178, 219);
+    Fl_Color pairing_armed = rgb(102, 160, 140);
     Fl_Color zoom_text = rgb(124, 121, 154);
     Fl_Color tick = rgb(117, 127, 146);
     Fl_Color axis_label = rgb(97, 107, 126);
@@ -74,6 +81,12 @@ SpectrumPalette palette_for_nucleus(const std::string &nucleus_label) {
         p.reference_label_bg = rgb(250, 242, 233);
         p.experimental_soft = rgb(183, 202, 232);
         p.experimental_main = rgb(130, 161, 204);
+        p.compare_soft = rgb(216, 202, 234);
+        p.compare_main = rgb(166, 140, 197);
+        p.compare_marker = rgb(193, 173, 224);
+        p.compare_marker_selected = rgb(146, 120, 182);
+        p.shift_down = rgb(210, 148, 131);
+        p.shift_up = rgb(132, 173, 214);
         p.selection_fill = rgb(235, 208, 188);
         p.selection_border = rgb(198, 163, 137);
         return p;
@@ -87,6 +100,12 @@ SpectrumPalette palette_for_nucleus(const std::string &nucleus_label) {
         p.reference_label_bg = rgb(233, 248, 243);
         p.experimental_soft = rgb(219, 187, 220);
         p.experimental_main = rgb(179, 133, 182);
+        p.compare_soft = rgb(224, 202, 172);
+        p.compare_main = rgb(194, 157, 114);
+        p.compare_marker = rgb(213, 185, 147);
+        p.compare_marker_selected = rgb(183, 144, 95);
+        p.shift_down = rgb(214, 142, 151);
+        p.shift_up = rgb(130, 180, 211);
         p.selection_fill = rgb(188, 231, 218);
         p.selection_border = rgb(127, 188, 170);
         return p;
@@ -100,6 +119,12 @@ SpectrumPalette palette_for_nucleus(const std::string &nucleus_label) {
         p.reference_label_bg = rgb(242, 236, 252);
         p.experimental_soft = rgb(191, 221, 184);
         p.experimental_main = rgb(140, 185, 130);
+        p.compare_soft = rgb(216, 206, 176);
+        p.compare_main = rgb(183, 164, 120);
+        p.compare_marker = rgb(196, 185, 147);
+        p.compare_marker_selected = rgb(162, 145, 101);
+        p.shift_down = rgb(213, 141, 146);
+        p.shift_up = rgb(130, 176, 214);
         p.selection_fill = rgb(224, 214, 244);
         p.selection_border = rgb(170, 150, 213);
         return p;
@@ -146,6 +171,7 @@ SpectrumWidget::SpectrumWidget(int x, int y, int w, int h, const char *label)
 
 void SpectrumWidget::set_points(std::vector<SpectrumPoint> points) {
     points_ = std::move(points);
+    armed_primary_group_id_ = 0;
     reset_zoom();
     selecting_zoom_ = false;
     redraw();
@@ -162,6 +188,9 @@ bool SpectrumWidget::load_from_csv(const std::string &csv_path) {
 
 void SpectrumWidget::set_peak_markers(std::vector<PeakMarker> markers) {
     peak_markers_ = std::move(markers);
+    if (peak_markers_.empty()) {
+        armed_primary_group_id_ = 0;
+    }
     redraw();
 }
 
@@ -221,6 +250,39 @@ void SpectrumWidget::set_experimental_points(std::vector<SpectrumPoint> points) 
     redraw();
 }
 
+void SpectrumWidget::set_comparison_points(std::vector<SpectrumPoint> points) {
+    comparison_points_ = std::move(points);
+    redraw();
+}
+
+void SpectrumWidget::clear_comparison_points() {
+    comparison_points_.clear();
+    comparison_peak_markers_.clear();
+    manual_shift_pairs_.clear();
+    armed_primary_group_id_ = 0;
+    redraw();
+}
+
+void SpectrumWidget::set_comparison_peak_markers(std::vector<ComparisonPeakMarker> markers) {
+    comparison_peak_markers_ = std::move(markers);
+    if (comparison_peak_markers_.empty()) {
+        manual_shift_pairs_.clear();
+        armed_primary_group_id_ = 0;
+    }
+    redraw();
+}
+
+void SpectrumWidget::set_manual_shift_pairs(std::vector<ManualShiftPair> pairs) {
+    manual_shift_pairs_ = std::move(pairs);
+    redraw();
+}
+
+void SpectrumWidget::clear_manual_shift_pairs() {
+    manual_shift_pairs_.clear();
+    armed_primary_group_id_ = 0;
+    redraw();
+}
+
 void SpectrumWidget::clear_experimental_points() {
     experimental_points_.clear();
     redraw();
@@ -228,6 +290,10 @@ void SpectrumWidget::clear_experimental_points() {
 
 void SpectrumWidget::set_on_peak_selected(std::function<void(int)> callback) {
     on_peak_selected_ = std::move(callback);
+}
+
+void SpectrumWidget::set_on_manual_shift_pair(std::function<void(int, int)> callback) {
+    on_manual_shift_pair_ = std::move(callback);
 }
 
 void SpectrumWidget::reset_zoom() {
@@ -239,7 +305,7 @@ void SpectrumWidget::reset_zoom() {
 }
 
 std::pair<double, double> SpectrumWidget::data_ppm_bounds() const {
-    if (points_.size() < 2 && experimental_points_.size() < 2) {
+    if (points_.size() < 2 && comparison_points_.size() < 2 && experimental_points_.size() < 2) {
         return {0.0, 1.0};
     }
     bool has_value = false;
@@ -261,6 +327,7 @@ std::pair<double, double> SpectrumWidget::data_ppm_bounds() const {
         }
     };
     consume(points_);
+    consume(comparison_points_);
     consume(experimental_points_);
     if (!has_value) {
         return {0.0, 1.0};
@@ -283,7 +350,7 @@ std::pair<double, double> SpectrumWidget::active_ppm_bounds() const {
 }
 
 double SpectrumWidget::pixel_to_ppm(int pixel_x) const {
-    if (points_.size() < 2 && experimental_points_.size() < 2) {
+    if (points_.size() < 2 && comparison_points_.size() < 2 && experimental_points_.size() < 2) {
         return 0.0;
     }
 
@@ -346,7 +413,7 @@ void SpectrumWidget::draw() {
         fl_line(plot_x0, gy, plot_x0 + plot_w, gy);
     }
 
-    if (points_.size() < 2 && experimental_points_.size() < 2) {
+    if (points_.size() < 2 && comparison_points_.size() < 2 && experimental_points_.size() < 2) {
         fl_color(pal.tick);
         fl_draw("No spectrum loaded", plot_x0 + 6, plot_y0 + 22);
         fl_pop_clip();
@@ -357,14 +424,29 @@ void SpectrumWidget::draw() {
     const double min_ppm = ppm_bounds.first;
     const double max_ppm = ppm_bounds.second;
     const bool reverse_axis = !is_cd_label(nucleus_label_);
+    bool has_calc_intensity = false;
     double min_intensity = 0.0;
     double max_intensity = 1.0;
-    if (!points_.empty()) {
-        const auto [min_i_it, max_i_it] = std::minmax_element(points_.begin(), points_.end(), [](const auto &a, const auto &b) {
-            return a.intensity < b.intensity;
-        });
-        min_intensity = min_i_it->intensity;
-        max_intensity = max_i_it->intensity;
+    auto consume_intensity = [&](const std::vector<SpectrumPoint> &pts) {
+        for (const auto &p : pts) {
+            if (!std::isfinite(p.intensity)) {
+                continue;
+            }
+            if (!has_calc_intensity) {
+                min_intensity = p.intensity;
+                max_intensity = p.intensity;
+                has_calc_intensity = true;
+                continue;
+            }
+            min_intensity = std::min(min_intensity, p.intensity);
+            max_intensity = std::max(max_intensity, p.intensity);
+        }
+    };
+    consume_intensity(points_);
+    consume_intensity(comparison_points_);
+    if (!has_calc_intensity) {
+        min_intensity = 0.0;
+        max_intensity = 1.0;
     }
 
     double exp_max_abs = 1.0;
@@ -399,13 +481,16 @@ void SpectrumWidget::draw() {
     fl_line(plot_x0, zero_line_y, plot_x0 + plot_w, zero_line_y);
 
     fl_push_clip(plot_x0, plot_y0, plot_w + 1, plot_h + 1);
-    auto draw_trace = [&](Fl_Color color, int width) {
+    auto draw_calculated_trace = [&](const std::vector<SpectrumPoint> &trace_points, Fl_Color color, int width) {
+        if (trace_points.empty()) {
+            return;
+        }
         fl_color(color);
         fl_line_style(FL_SOLID, width);
         int prev_x = 0;
         int prev_y = 0;
         bool has_prev = false;
-        for (const auto &p : points_) {
+        for (const auto &p : trace_points) {
             const double x_norm = ppm_to_x_norm(p.ppm);
             const double signal = (p.intensity - min_intensity) / intensity_range;
 
@@ -420,8 +505,12 @@ void SpectrumWidget::draw() {
         }
     };
     if (!points_.empty()) {
-        draw_trace(pal.trace_soft, 3);
-        draw_trace(pal.trace_main, 2);
+        draw_calculated_trace(points_, pal.trace_soft, 3);
+        draw_calculated_trace(points_, pal.trace_main, 2);
+    }
+    if (!comparison_points_.empty()) {
+        draw_calculated_trace(comparison_points_, pal.compare_soft, 3);
+        draw_calculated_trace(comparison_points_, pal.compare_main, 2);
     }
 
     if (!experimental_points_.empty()) {
@@ -446,6 +535,34 @@ void SpectrumWidget::draw() {
         };
         draw_experimental_trace(pal.experimental_soft, 3);
         draw_experimental_trace(pal.experimental_main, 2);
+    }
+
+    if (!manual_shift_pairs_.empty()) {
+        fl_font(FL_HELVETICA, 10);
+        for (std::size_t i = 0; i < manual_shift_pairs_.size(); ++i) {
+            const auto &pair = manual_shift_pairs_[i];
+            const double x1_norm = ppm_to_x_norm(pair.primary_ppm);
+            const double x2_norm = ppm_to_x_norm(pair.compare_ppm);
+            if (x1_norm < 0.0 || x1_norm > 1.0 || x2_norm < 0.0 || x2_norm > 1.0) {
+                continue;
+            }
+            const int x1 = plot_x0 + static_cast<int>(x1_norm * plot_w);
+            const int x2 = plot_x0 + static_cast<int>(x2_norm * plot_w);
+            const int lane = static_cast<int>(i % 4);
+            const int py = plot_y0 + 14 + lane * 11;
+            const Fl_Color shift_color = (pair.delta_ppm > 0.0) ? pal.shift_down : pal.shift_up;
+            fl_color(shift_color);
+            fl_line_style(FL_SOLID, 2);
+            fl_line(x1, py, x2, py);
+            fl_pie(x1 - 2, py - 2, 4, 4, 0, 360);
+            fl_pie(x2 - 2, py - 2, 4, 4, 0, 360);
+
+            std::ostringstream label;
+            label << std::showpos << std::fixed << std::setprecision(2) << pair.delta_ppm;
+            const int text_x = std::min(x1, x2) + std::abs(x2 - x1) / 2 - 14;
+            const int text_y = std::max(plot_y0 + 11, py - 3);
+            fl_draw(label.str().c_str(), text_x, text_y);
+        }
     }
     fl_line_style(FL_SOLID, 0);
 
@@ -551,11 +668,31 @@ void SpectrumWidget::draw() {
                 fl_color(pal.marker_selected);
                 fl_line_style(FL_SOLID, 2);
                 fl_pie(px - 4, zero_line_y - 4, 8, 8, 0, 360);
+            } else if (armed_primary_group_id_ == marker.group_id) {
+                fl_color(pal.pairing_armed);
+                fl_line_style(FL_SOLID, 2);
+                fl_rect(px - 5, zero_line_y - 5, 10, 10);
             } else {
                 fl_color(pal.marker);
                 fl_line_style(FL_DASH, 1);
                 fl_line(px, plot_y0, px, zero_line_y);
             }
+        }
+        fl_line_style(FL_SOLID, 0);
+    }
+
+    if (!comparison_peak_markers_.empty()) {
+        for (const auto &marker : comparison_peak_markers_) {
+            const double x_norm = ppm_to_x_norm(marker.center_ppm);
+            const int px = plot_x0 + static_cast<int>(x_norm * plot_w);
+            if (px < plot_x0 || px > plot_x0 + plot_w) {
+                continue;
+            }
+            fl_color(pal.compare_marker);
+            fl_line_style(FL_DASH, 1);
+            fl_line(px, plot_y0 + 6, px, zero_line_y - 8);
+            fl_color(pal.compare_marker_selected);
+            fl_pie(px - 3, zero_line_y - 13, 6, 6, 0, 360);
         }
         fl_line_style(FL_SOLID, 0);
     }
@@ -649,7 +786,7 @@ void SpectrumWidget::draw() {
 
 int SpectrumWidget::handle(int event) {
     if (event == FL_PUSH) {
-        if (points_.size() < 2 && experimental_points_.size() < 2) {
+        if (points_.size() < 2 && comparison_points_.size() < 2 && experimental_points_.size() < 2) {
             return Fl_Widget::handle(event);
         }
 
@@ -703,34 +840,54 @@ int SpectrumWidget::handle(int event) {
             return 1;
         }
 
-        if (peak_markers_.empty()) {
-            redraw();
-            return 1;
-        }
-
         const double clicked_ppm = pixel_to_ppm(release_x);
-        int best_group = -1;
-        double best_dist = 1e9;
+        int best_primary_group = -1;
+        double best_primary_dist = 1e9;
         for (const auto &marker : peak_markers_) {
             const double d = std::abs(marker.center_ppm - clicked_ppm);
-            if (d < best_dist) {
-                best_dist = d;
-                best_group = marker.group_id;
+            if (d < best_primary_dist) {
+                best_primary_dist = d;
+                best_primary_group = marker.group_id;
+            }
+        }
+
+        int best_compare_group = -1;
+        double best_compare_dist = 1e9;
+        for (const auto &marker : comparison_peak_markers_) {
+            const double d = std::abs(marker.center_ppm - clicked_ppm);
+            if (d < best_compare_dist) {
+                best_compare_dist = d;
+                best_compare_group = marker.group_id;
             }
         }
 
         const auto [min_ppm, max_ppm] = active_ppm_bounds();
         const double peak_pick_window = std::max(0.01, std::min(0.35, (max_ppm - min_ppm) * 0.03));
-        if (best_group > 0 && best_dist <= peak_pick_window) {
+
+        const bool hit_primary = best_primary_group > 0 && best_primary_dist <= peak_pick_window;
+        const bool hit_compare = best_compare_group > 0 && best_compare_dist <= peak_pick_window;
+
+        if (hit_primary && (!hit_compare || best_primary_dist <= best_compare_dist)) {
+            armed_primary_group_id_ = best_primary_group;
             selected_group_ids_.clear();
-            selected_group_ids_.insert(best_group);
+            selected_group_ids_.insert(best_primary_group);
             redraw();
             if (on_peak_selected_) {
-                on_peak_selected_(best_group);
+                on_peak_selected_(best_primary_group);
             }
             return 1;
         }
 
+        if (hit_compare) {
+            if (armed_primary_group_id_ > 0 && on_manual_shift_pair_) {
+                on_manual_shift_pair_(armed_primary_group_id_, best_compare_group);
+            }
+            armed_primary_group_id_ = 0;
+            redraw();
+            return 1;
+        }
+
+        armed_primary_group_id_ = 0;
         selected_group_ids_.clear();
         if (on_peak_selected_) {
             on_peak_selected_(0);

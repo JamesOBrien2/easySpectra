@@ -3,8 +3,10 @@
 #include <FL/Fl.H>
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Image_Surface.H>
+#include <FL/Fl_Menu_Item.H>
 #include <FL/Fl_Native_File_Chooser.H>
 #include <FL/Fl_PNG_Image.H>
+#include <FL/Fl_Pixmap.H>
 
 #include <algorithm>
 #include <cctype>
@@ -12,6 +14,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <set>
 #include <sstream>
 #include <string>
 #include <unistd.h>
@@ -36,6 +40,20 @@ struct WorkflowStep {
     std::string method;
 };
 
+struct ExampleCase {
+    std::string difficulty;
+    std::string case_name;
+    std::string workflow;
+    std::string target_product;
+    std::string nucleus_arg;
+    std::string smiles;
+    std::string computed_reference_csv;
+    std::string experimental_overlay_file;
+    std::string experimental_format_hint;
+    std::string notes;
+    std::string csv_row;
+};
+
 std::string normalize_nucleus_label(const std::string &raw);
 bool is_proton_nucleus(const std::string &nucleus);
 std::string nucleus_symbol(const std::string &nucleus);
@@ -48,6 +66,245 @@ std::string make_unique_overlay_key(
     const std::string &base_key);
 InputFormat detect_input_format_auto(const std::string &value);
 std::vector<std::string> split_smiles_inputs(const std::string &value);
+std::string trim_copy(const std::string &value);
+std::vector<std::string> parse_csv_line(const std::string &line);
+
+std::string uppercase_copy(const std::string &value) {
+    std::string out = trim_copy(value);
+    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    return out;
+}
+
+std::string find_examples_case_csv() {
+    namespace fs = std::filesystem;
+
+    std::error_code ec;
+    fs::path probe = fs::current_path(ec);
+    if (ec) {
+        return {};
+    }
+
+    const fs::path relative("tests/spectra_comparison_cases.csv");
+    for (int depth = 0; depth < 8; ++depth) {
+        const fs::path candidate = probe / relative;
+        ec.clear();
+        if (fs::exists(candidate, ec) && !ec) {
+            return candidate.lexically_normal().string();
+        }
+        if (!probe.has_parent_path()) {
+            break;
+        }
+        const fs::path parent = probe.parent_path();
+        if (parent == probe) {
+            break;
+        }
+        probe = parent;
+    }
+    return {};
+}
+
+std::string resolve_example_asset_path(const std::string &value) {
+    namespace fs = std::filesystem;
+    const std::string clean = trim_copy(value);
+    if (clean.empty()) {
+        return {};
+    }
+
+    fs::path p(clean);
+    if (p.is_absolute()) {
+        return p.lexically_normal().string();
+    }
+
+    std::error_code ec;
+    fs::path cwd = fs::current_path(ec);
+    if (!ec) {
+        fs::path direct = cwd / p;
+        ec.clear();
+        if (fs::exists(direct, ec) && !ec) {
+            return direct.lexically_normal().string();
+        }
+    }
+
+    const std::string cases_csv = find_examples_case_csv();
+    if (!cases_csv.empty()) {
+        const fs::path repo_root = fs::path(cases_csv).parent_path().parent_path();
+        fs::path candidate = repo_root / p;
+        ec.clear();
+        if (fs::exists(candidate, ec) && !ec) {
+            return candidate.lexically_normal().string();
+        }
+    }
+
+    return p.lexically_normal().string();
+}
+
+std::string lowercase_copy(const std::string &value) {
+    std::string out = trim_copy(value);
+    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return out;
+}
+
+std::vector<std::string> split_tokens_alnum(const std::string &value) {
+    std::vector<std::string> tokens;
+    std::string token;
+    for (char c : value) {
+        if (std::isalnum(static_cast<unsigned char>(c)) != 0) {
+            token.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        } else if (!token.empty()) {
+            tokens.push_back(token);
+            token.clear();
+        }
+    }
+    if (!token.empty()) {
+        tokens.push_back(token);
+    }
+    return tokens;
+}
+
+std::string title_case_tokens(const std::vector<std::string> &tokens) {
+    if (tokens.empty()) {
+        return {};
+    }
+    std::ostringstream oss;
+    for (std::size_t i = 0; i < tokens.size(); ++i) {
+        std::string token = tokens[i];
+        if (!token.empty()) {
+            token[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(token[0])));
+        }
+        oss << token;
+        if (i + 1 < tokens.size()) {
+            oss << " ";
+        }
+    }
+    return oss.str();
+}
+
+std::string infer_example_bundle_name(const ExampleCase &example) {
+    const std::unordered_set<std::string> ignore = {
+        "easy",
+        "medium",
+        "hard",
+        "nmr",
+        "cd",
+        "auto",
+        "h",
+        "c",
+        "f",
+        "p",
+        "1h",
+        "13c",
+        "19f",
+        "31p",
+    };
+
+    const auto all_tokens = split_tokens_alnum(example.case_name);
+    std::vector<std::string> kept;
+    for (const auto &token : all_tokens) {
+        if (ignore.count(token) > 0) {
+            continue;
+        }
+        kept.push_back(token);
+    }
+    if (kept.empty() && !example.smiles.empty()) {
+        return trim_copy(example.smiles);
+    }
+    return title_case_tokens(kept);
+}
+
+std::string pick_default_product(const std::set<std::string> &products) {
+    if (products.count("1H") > 0) {
+        return "1H";
+    }
+    if (products.count("13C") > 0) {
+        return "13C";
+    }
+    if (products.count("19F") > 0) {
+        return "19F";
+    }
+    if (products.count("31P") > 0) {
+        return "31P";
+    }
+    if (products.count("CD") > 0) {
+        return "CD";
+    }
+    if (!products.empty()) {
+        return *products.begin();
+    }
+    return "1H";
+}
+
+std::string sanitize_filename_component(const std::string &value) {
+    std::string out;
+    out.reserve(value.size());
+    for (char c : value) {
+        if (std::isalnum(static_cast<unsigned char>(c)) != 0) {
+            out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        } else if (c == '_' || c == '-') {
+            out.push_back(c);
+        } else {
+            out.push_back('_');
+        }
+    }
+    if (out.empty()) {
+        out = "example";
+    }
+    return out;
+}
+
+std::string csv_escape(const std::string &value) {
+    if (value.find(',') == std::string::npos && value.find('"') == std::string::npos) {
+        return value;
+    }
+    std::string escaped;
+    escaped.reserve(value.size() + 4);
+    escaped.push_back('"');
+    for (char c : value) {
+        if (c == '"') {
+            escaped.push_back('"');
+        }
+        escaped.push_back(c);
+    }
+    escaped.push_back('"');
+    return escaped;
+}
+
+std::string write_example_manifest(
+    const std::string &bundle_name,
+    const std::map<std::string, std::string> &computed_by_product) {
+    namespace fs = std::filesystem;
+    if (computed_by_product.empty()) {
+        return {};
+    }
+
+    std::error_code ec;
+    fs::path out_dir = fs::temp_directory_path(ec);
+    if (ec) {
+        return {};
+    }
+    out_dir /= "easynmr_example_manifests";
+    fs::create_directories(out_dir, ec);
+    if (ec) {
+        return {};
+    }
+
+    const auto now = std::chrono::system_clock::now();
+    const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    const fs::path path = out_dir / (sanitize_filename_component(bundle_name) + "_" + std::to_string(stamp) + ".csv");
+
+    std::ofstream out(path);
+    if (!out) {
+        return {};
+    }
+    out << "label,spectrum_csv,peaks_csv,assignments_csv\n";
+    for (const auto &entry : computed_by_product) {
+        out << csv_escape(entry.first) << ","
+            << csv_escape(entry.second) << ",,\n";
+    }
+    if (!out) {
+        return {};
+    }
+    return path.string();
+}
 
 std::string truncate_text(const std::string &value, std::size_t max_len) {
     if (value.size() <= max_len) {
@@ -362,36 +619,136 @@ std::string find_xyzedit_binary() {
     return {};
 }
 
-std::string format_label_for(const QueuedJob &job, bool active) {
-    std::string state = "PENDING";
+const char *kRoleBlueDotXpm[] = {
+    "9 9 2 1",
+    "  c None",
+    ". c #6CA6E8",
+    "         ",
+    "         ",
+    "   ...   ",
+    "  .....  ",
+    "  .....  ",
+    "  .....  ",
+    "   ...   ",
+    "         ",
+    "         ",
+};
+
+const char *kRoleGreenDotXpm[] = {
+    "9 9 2 1",
+    "  c None",
+    ". c #D7A97E",
+    "         ",
+    "         ",
+    "   ...   ",
+    "  .....  ",
+    "  .....  ",
+    "  .....  ",
+    "   ...   ",
+    "         ",
+    "         ",
+};
+
+Fl_Pixmap kRoleBlueDot(kRoleBlueDotXpm);
+Fl_Pixmap kRoleGreenDot(kRoleGreenDotXpm);
+
+std::string format_label_for(
+    const QueuedJob &job,
+    bool selected,
+    bool is_primary_role,
+    bool is_compare_role) {
+    std::string state_icon = "WAIT";
     if (job.status == "running") {
-        state = "RUNNING";
+        state_icon = "RUN";
     } else if (job.status == "done") {
-        state = "DONE";
+        state_icon = "OK";
     } else if (job.status == "failed") {
-        state = "FAILED";
+        state_icon = "FAIL";
+    }
+
+    std::string role = ".";
+    if (is_primary_role) {
+        role = "A";
+    } else if (is_compare_role) {
+        role = "B";
+    }
+
+    std::string run_or_select = " ";
+    if (selected) {
+        run_or_select = ">";
+    } else if (job.status == "running") {
+        run_or_select = "*";
+    }
+
+    std::string mode = workflow_display_name(job.config.workflow_kind);
+    if (job.config.workflow_kind == WorkflowKind::Nmr) {
+        mode += ":" + normalize_nucleus_label(job.config.nucleus);
+    }
+
+    std::string tail;
+    if (job.status == "running" && !job.message.empty()) {
+        tail = truncate_text(job.message, 22);
+    } else if (job.status == "failed" && !job.message.empty()) {
+        tail = truncate_text(job.message, 22);
+    } else {
+        tail = to_string(job.config.input_format);
     }
 
     std::ostringstream oss;
-    if (active) {
-        oss << ">> ";
-    } else {
-        oss << "   ";
-    }
-    oss << "[" << state << "] "
-        << job.id << " | "
-        << truncate_text(job.config.job_name, 10) << " | "
-        << to_string(job.config.input_format) << " | "
-        << workflow_display_name(job.config.workflow_kind);
-    if (job.config.workflow_kind == WorkflowKind::Nmr) {
-        oss << ":" << job.config.nucleus;
-    }
-    if (job.status == "running" && !job.message.empty()) {
-        oss << " | " << truncate_text(job.message, 26);
-    } else if (job.status == "failed" && !job.message.empty()) {
-        oss << " | " << truncate_text(job.message, 14);
-    }
+    oss << run_or_select
+        << "\t"
+        << role
+        << "\t"
+        << state_icon
+        << "\t"
+        << truncate_text(job.config.job_name, 20)
+        << "\t"
+        << job.id
+        << "\t"
+        << mode
+        << "\t"
+        << tail;
     return oss.str();
+}
+
+std::vector<ExampleCase> load_example_cases(const std::string &path) {
+    std::vector<ExampleCase> out;
+    std::ifstream input(path);
+    if (!input) {
+        return out;
+    }
+
+    std::string line;
+    bool header = true;
+    while (std::getline(input, line)) {
+        if (header) {
+            header = false;
+            continue;
+        }
+        if (trim_copy(line).empty()) {
+            continue;
+        }
+        const auto fields = parse_csv_line(line);
+        if (fields.size() < 10) {
+            continue;
+        }
+        ExampleCase c;
+        c.difficulty = trim_copy(fields[0]);
+        c.case_name = trim_copy(fields[1]);
+        c.workflow = trim_copy(fields[2]);
+        c.target_product = trim_copy(fields[3]);
+        c.nucleus_arg = trim_copy(fields[4]);
+        c.smiles = trim_copy(fields[5]);
+        c.computed_reference_csv = trim_copy(fields[6]);
+        c.experimental_overlay_file = trim_copy(fields[7]);
+        c.experimental_format_hint = trim_copy(fields[8]);
+        c.notes = trim_copy(fields[9]);
+        c.csv_row = line;
+        if (!c.case_name.empty() && !c.computed_reference_csv.empty()) {
+            out.push_back(std::move(c));
+        }
+    }
+    return out;
 }
 
 std::vector<std::string> parse_csv_line(const std::string &line) {
@@ -757,6 +1114,23 @@ std::vector<StructureBond> read_structure_bonds(const std::string &path) {
         if (bond.order < 1) {
             bond.order = 1;
         }
+        if (fields.size() >= 4) {
+            bond.stereo_style = trim_copy(fields[3]);
+            std::transform(
+                bond.stereo_style.begin(),
+                bond.stereo_style.end(),
+                bond.stereo_style.begin(),
+                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (bond.stereo_style != "wedge" && bond.stereo_style != "dash") {
+                bond.stereo_style = "none";
+            }
+        }
+        if (fields.size() >= 5) {
+            int stereo_from_atom = 0;
+            if (try_parse_int(fields[4], stereo_from_atom)) {
+                bond.stereo_from_atom = stereo_from_atom;
+            }
+        }
         bonds.push_back(std::move(bond));
     }
 
@@ -774,6 +1148,53 @@ std::map<std::string, SpectralProductFiles> read_spectra_manifest(const std::str
         out[files.label] = std::move(files);
     }
     return out;
+}
+
+std::map<std::string, SpectralProductFiles> spectral_products_for_job(const QueuedJob &job) {
+    std::map<std::string, SpectralProductFiles> products;
+    if (!job.spectra_manifest_csv.empty()) {
+        products = read_spectra_manifest(job.spectra_manifest_csv);
+    }
+    if (!products.empty()) {
+        return products;
+    }
+
+    if (job.spectrum_csv.empty()) {
+        return products;
+    }
+
+    const std::string fallback_nucleus =
+        (job.config.workflow_kind == WorkflowKind::Cd) ? "CD" : normalize_nucleus_label(job.config.nucleus);
+    SpectralProductFiles fallback;
+    fallback.label = fallback_nucleus.empty() ? "1H" : fallback_nucleus;
+    fallback.spectrum_csv = job.spectrum_csv;
+    fallback.peaks_csv = job.peaks_csv;
+    fallback.assignments_csv = job.assignments_csv;
+    products[fallback.label] = std::move(fallback);
+    return products;
+}
+
+int browser_line_at_mouse(const Fl_Hold_Browser *browser, int mouse_y) {
+    if (browser == nullptr || browser->size() <= 0) {
+        return 0;
+    }
+    const int bx = browser->x();
+    const int by = browser->y();
+    const int bh = browser->h();
+    if (mouse_y < by || mouse_y > by + bh) {
+        return 0;
+    }
+
+    const int row_height = std::max(14, static_cast<int>(browser->textsize()) + 6);
+    if (row_height <= 0) {
+        return 0;
+    }
+    const int y_in_list = mouse_y - by + browser->vposition();
+    const int line = y_in_list / row_height + 1;
+    if (line < 1 || line > browser->size()) {
+        return 0;
+    }
+    return line;
 }
 
 std::vector<ReferencePeak> reference_peaks_for_solvent(const std::string &solvent_raw, const std::string &nucleus_raw) {
@@ -1095,10 +1516,41 @@ AppWindow::AppWindow(int w, int h, const char *title)
     preview_button_->labelfont(FL_HELVETICA_BOLD);
     preview_button_->labelsize(11);
 
-    structure_widget_ = new StructureWidget(panel_x + 10, panel_y + 240, panel_w - 20, 160, nullptr);
+    structure_area_x_ = panel_x + 10;
+    structure_area_y_ = panel_y + 240;
+    structure_area_w_ = panel_w - 20;
+    structure_area_h_ = 160;
+
+    structure_current_label_ = new Fl_Box(structure_area_x_, structure_area_y_, structure_area_w_ / 2, 16, "");
+    structure_current_label_->box(FL_NO_BOX);
+    structure_current_label_->labelsize(11);
+    structure_current_label_->labelcolor(ui(86, 112, 146));
+    structure_current_label_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    structure_current_label_->hide();
+
+    structure_compare_label_ =
+        new Fl_Box(structure_area_x_ + structure_area_w_ / 2 + 4, structure_area_y_, structure_area_w_ / 2 - 4, 16, "");
+    structure_compare_label_->box(FL_NO_BOX);
+    structure_compare_label_->labelsize(11);
+    structure_compare_label_->labelcolor(ui(164, 114, 86));
+    structure_compare_label_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    structure_compare_label_->hide();
+
+    structure_widget_ =
+        new StructureWidget(structure_area_x_, structure_area_y_, structure_area_w_, structure_area_h_, nullptr);
+    structure_widget_->set_highlight_palette(ui(201, 223, 245), ui(85, 121, 167), ui(222, 235, 251));
     structure_widget_->set_on_atom_selected([this](int atom_index, const std::vector<int> &hydrogens) {
         on_structure_atom_picked(atom_index, hydrogens);
     });
+
+    compare_structure_widget_ =
+        new StructureWidget(structure_area_x_, structure_area_y_, structure_area_w_, structure_area_h_, nullptr);
+    compare_structure_widget_->set_highlight_palette(ui(244, 216, 198), ui(176, 114, 86), ui(252, 232, 220));
+    compare_structure_widget_->set_on_atom_selected([this](int atom_index, const std::vector<int> &hydrogens) {
+        on_compare_structure_atom_picked(atom_index, hydrogens);
+    });
+    compare_structure_widget_->set_empty_message("No comparison structure");
+    compare_structure_widget_->hide();
 
     queue_button_ = new Fl_Button(panel_x + 10, panel_y + 406, 100, 30, "Queue");
     queue_button_->callback(on_queue_job_cb, this);
@@ -1120,30 +1572,63 @@ AppWindow::AppWindow(int w, int h, const char *title)
     cancel_button_->color(ui(223, 229, 238));
     cancel_button_->labelcolor(ui(88, 98, 112));
 
-    auto *queue_title = new Fl_Box(panel_x + 10, panel_y + 444, panel_w - 20, 20, "Queue (up to 50 jobs)");
+    auto *queue_title = new Fl_Box(panel_x + 10, panel_y + 444, panel_w - 20, 20, "Queue (A=current, B=compare)");
     queue_title->box(FL_NO_BOX);
     queue_title->labelsize(12);
     queue_title->labelcolor(ui(86, 97, 112));
     queue_title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
-    queue_browser_ = new Fl_Hold_Browser(panel_x + 10, panel_y + 468, panel_w - 20, 140);
+    queue_browser_ = new Fl_Hold_Browser(panel_x + 10, panel_y + 468, panel_w - 20, 122);
     queue_browser_->callback(on_select_job_cb, this);
     queue_browser_->box(FL_DOWN_BOX);
     queue_browser_->color(ui(255, 255, 255));
-    queue_browser_->textsize(11);
+    queue_browser_->textsize(12);
+    queue_browser_->textfont(FL_HELVETICA_BOLD);
     queue_browser_->selection_color(ui(224, 236, 248));
+    static int queue_col_widths[] = {16, 24, 40, 112, 36, 72, 0};
+    queue_browser_->column_char('\t');
+    queue_browser_->column_widths(queue_col_widths);
 
-    run_selected_button_ = new Fl_Button(panel_x + 10, panel_y + 618, 130, 26, "Run Selected");
+    auto *example_title = new Fl_Box(panel_x + 10, panel_y + 594, panel_w - 20, 18, "Examples");
+    example_title->box(FL_NO_BOX);
+    example_title->labelsize(12);
+    example_title->labelcolor(ui(82, 96, 118));
+    example_title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+
+    example_choice_ = new Fl_Choice(panel_x + 10, panel_y + 612, panel_w - 20, 24);
+    example_choice_->box(FL_DOWN_BOX);
+    example_choice_->color(ui(255, 255, 255));
+    example_choice_->labelsize(11);
+    example_choice_->add("Examples: none");
+    example_choice_->value(0);
+    example_choice_->callback(on_select_example_cb, this);
+
+    load_example_calc_button_ = new Fl_Button(panel_x + 10, panel_y + 640, 102, 24, "Load Calc");
+    load_example_calc_button_->callback(on_load_example_calc_cb, this);
+    load_example_calc_button_->box(FL_UP_BOX);
+    load_example_calc_button_->color(ui(206, 220, 238));
+    load_example_calc_button_->labelcolor(ui(60, 74, 95));
+    load_example_calc_button_->labelsize(11);
+
+    load_example_bundle_button_ = new Fl_Button(panel_x + 116, panel_y + 640, 102, 24, "Calc+Exp");
+    load_example_bundle_button_->callback(on_load_example_bundle_cb, this);
+    load_example_bundle_button_->box(FL_UP_BOX);
+    load_example_bundle_button_->color(ui(190, 220, 207));
+    load_example_bundle_button_->labelcolor(ui(55, 82, 69));
+    load_example_bundle_button_->labelsize(11);
+
+    run_selected_button_ = new Fl_Button(panel_x + 224, panel_y + 640, 100, 24, "Run Selected");
     run_selected_button_->callback(on_run_selected_cb, this);
     run_selected_button_->box(FL_UP_BOX);
     run_selected_button_->color(ui(186, 204, 229));
     run_selected_button_->labelcolor(ui(59, 73, 94));
     run_selected_button_->labelfont(FL_HELVETICA_BOLD);
+    run_selected_button_->labelsize(11);
 
-    status_box_ = new Fl_Box(panel_x + 146, panel_y + 618, panel_w - 156, 26, "Idle");
+    status_box_ = new Fl_Box(panel_x + 10, panel_y + 668, panel_w - 20, 26, "Idle");
     status_box_->box(FL_FLAT_BOX);
     status_box_->color(ui(229, 236, 246));
-    status_box_->labelsize(12);
+    status_box_->labelsize(11);
     status_box_->labelcolor(ui(67, 77, 92));
     status_box_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
@@ -1164,6 +1649,8 @@ AppWindow::AppWindow(int w, int h, const char *title)
 
     spectrum_widget_ = new SpectrumWidget(right_x + 8, right_y + 30, right_w - 16, spectrum_h - 38, "Spectrum");
     spectrum_widget_->set_on_peak_selected([this](int group_id) { on_peak_picked(group_id); });
+    spectrum_widget_->set_on_manual_shift_pair(
+        [this](int primary_group_id, int compare_group_id) { on_manual_shift_pair(primary_group_id, compare_group_id); });
 
     spectrum_nucleus_choice_ = new Fl_Choice(right_x + 210, right_y + 6, 110, 24);
     spectrum_nucleus_choice_->box(FL_DOWN_BOX);
@@ -1308,8 +1795,10 @@ AppWindow::AppWindow(int w, int h, const char *title)
     workflow_info_line3_->labelcolor(ui(120, 132, 149));
 
     end();
+    refresh_example_choice();
     refresh_experimental_choice();
     apply_active_experimental_overlay();
+    update_structure_compare_layout(false);
     Fl::add_timeout(0.2, on_ui_tick_cb, this);
     preview_current_input(false);
     refresh_workflow_browser(nullptr);
@@ -1330,6 +1819,12 @@ AppWindow::~AppWindow() {
 }
 
 int AppWindow::handle(int event) {
+    if (event == FL_PUSH && Fl::event_button() == FL_RIGHT_MOUSE) {
+        if (maybe_show_queue_context_menu()) {
+            return 1;
+        }
+    }
+
     if (event == FL_SHORTCUT) {
         const int state = Fl::event_state();
         const bool command_or_ctrl = ((state & FL_COMMAND) != 0) || ((state & FL_CTRL) != 0);
@@ -1429,6 +1924,18 @@ void AppWindow::on_clear_experimental_cb(Fl_Widget *, void *userdata) {
 
 void AppWindow::on_export_spectrum_cb(Fl_Widget *, void *userdata) {
     static_cast<AppWindow *>(userdata)->on_export_spectrum();
+}
+
+void AppWindow::on_select_example_cb(Fl_Widget *, void *userdata) {
+    static_cast<AppWindow *>(userdata)->on_select_example();
+}
+
+void AppWindow::on_load_example_calc_cb(Fl_Widget *, void *userdata) {
+    static_cast<AppWindow *>(userdata)->on_load_example(false);
+}
+
+void AppWindow::on_load_example_bundle_cb(Fl_Widget *, void *userdata) {
+    static_cast<AppWindow *>(userdata)->on_load_example(true);
 }
 
 void AppWindow::on_debounced_preview_cb(void *userdata) {
@@ -1987,6 +2494,7 @@ void AppWindow::request_preview_for_job_index(std::size_t index, bool load_visua
 
 void AppWindow::on_select_job() {
     const int selected = queue_browser_->value();
+    selected_job_index_ = (selected > 0) ? (selected - 1) : -1;
     if (selected > 0) {
         const std::size_t index = static_cast<std::size_t>(selected - 1);
         bool needs_preview = false;
@@ -2002,6 +2510,8 @@ void AppWindow::on_select_job() {
         }
     }
     load_selected_job_visuals();
+    maybe_apply_example_overlay_for_active_selection();
+    refresh_queue_browser();
 }
 
 void AppWindow::on_select_peak() {
@@ -2056,6 +2566,9 @@ void AppWindow::on_select_atom() {
         if (pr != group_to_peak_row_.end()) {
             peak_browser_->value(pr->second);
         }
+        highlight_comparison_for_primary_group(group_id);
+    } else if (compare_structure_widget_ != nullptr) {
+        compare_structure_widget_->clear_highlight();
     }
 
     std::ostringstream status;
@@ -2115,6 +2628,7 @@ void AppWindow::on_select_spectrum_nucleus() {
 
     active_nucleus_ = normalize_nucleus_label(label);
     apply_nucleus_visuals(job, active_nucleus_);
+    maybe_apply_example_overlay_for_active_selection();
 }
 
 void AppWindow::on_select_experimental() {
@@ -2147,6 +2661,247 @@ void AppWindow::on_select_experimental() {
         status << ", " << format_it->second;
     }
     status << ")";
+    status_box_->copy_label(status.str().c_str());
+}
+
+void AppWindow::on_select_example() {
+    if (example_choice_ == nullptr) {
+        return;
+    }
+    const int selected = example_choice_->value();
+    if (selected <= 0 || selected >= static_cast<int>(example_choice_case_indices_.size())) {
+        return;
+    }
+    const int bundle_idx = example_choice_case_indices_[static_cast<std::size_t>(selected)];
+    if (bundle_idx < 0 || bundle_idx >= static_cast<int>(example_bundle_row_indices_.size())) {
+        return;
+    }
+
+    std::set<std::string> products;
+    std::string workflow;
+    for (int row_idx : example_bundle_row_indices_[static_cast<std::size_t>(bundle_idx)]) {
+        if (row_idx < 0 || row_idx >= static_cast<int>(example_case_rows_.size())) {
+            continue;
+        }
+        const auto fields = parse_csv_line(example_case_rows_[static_cast<std::size_t>(row_idx)]);
+        if (fields.size() < 10) {
+            continue;
+        }
+        products.insert(normalize_nucleus_label(fields[3]));
+        if (workflow.empty()) {
+            workflow = trim_copy(fields[2]);
+        }
+    }
+
+    std::ostringstream products_text;
+    bool first = true;
+    for (const auto &p : products) {
+        if (!first) {
+            products_text << ", ";
+        }
+        products_text << p;
+        first = false;
+    }
+
+    const std::string bundle_name = example_bundle_names_[static_cast<std::size_t>(bundle_idx)];
+    std::ostringstream status;
+    status << "Example selected: " << bundle_name;
+    if (!workflow.empty()) {
+        status << " | " << uppercase_copy(workflow);
+    }
+    if (!products.empty()) {
+        status << " | products: " << products_text.str();
+    }
+    status_box_->copy_label(status.str().c_str());
+}
+
+void AppWindow::on_load_example(bool with_experimental) {
+    if (example_choice_ == nullptr) {
+        status_box_->label("No example menu available");
+        return;
+    }
+    const int selected = example_choice_->value();
+    if (selected <= 0 || selected >= static_cast<int>(example_choice_case_indices_.size())) {
+        status_box_->label("Select an example first");
+        return;
+    }
+    const int bundle_idx = example_choice_case_indices_[static_cast<std::size_t>(selected)];
+    if (bundle_idx < 0 || bundle_idx >= static_cast<int>(example_bundle_row_indices_.size())) {
+        status_box_->label("Selected example is unavailable");
+        return;
+    }
+    const auto &row_indices = example_bundle_row_indices_[static_cast<std::size_t>(bundle_idx)];
+    if (row_indices.empty()) {
+        status_box_->label("Selected example has no spectra rows");
+        return;
+    }
+
+    std::map<std::string, std::string> computed_by_product;
+    std::map<std::string, std::string> experimental_by_product;
+    std::set<std::string> products;
+    std::string smiles;
+    bool has_nmr = false;
+    bool has_cd = false;
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (int row_idx : row_indices) {
+        if (row_idx < 0 || row_idx >= static_cast<int>(example_case_rows_.size())) {
+            continue;
+        }
+        const auto fields = parse_csv_line(example_case_rows_[static_cast<std::size_t>(row_idx)]);
+        if (fields.size() < 10) {
+            continue;
+        }
+        if (smiles.empty()) {
+            smiles = trim_copy(fields[5]);
+        }
+
+        const std::string workflow = lowercase_copy(fields[2]);
+        if (workflow == "cd") {
+            has_cd = true;
+        } else {
+            has_nmr = true;
+        }
+
+        const std::string product = normalize_nucleus_label(fields[3]);
+        if (product.empty()) {
+            continue;
+        }
+        const std::string computed_ref = resolve_example_asset_path(fields[6]);
+        ec.clear();
+        if (computed_ref.empty() || !fs::exists(computed_ref, ec) || ec) {
+            status_box_->copy_label(("Example missing computed spectrum file: " + trim_copy(fields[6])).c_str());
+            return;
+        }
+        if (computed_by_product.find(product) == computed_by_product.end()) {
+            computed_by_product[product] = computed_ref;
+            products.insert(product);
+        }
+
+        const std::string exp_file = resolve_example_asset_path(fields[7]);
+        if (!exp_file.empty() && experimental_by_product.find(product) == experimental_by_product.end()) {
+            experimental_by_product[product] = exp_file;
+        }
+    }
+
+    if (computed_by_product.empty()) {
+        status_box_->label("Selected example has no valid computed spectra");
+        return;
+    }
+
+    const std::string default_product = pick_default_product(products);
+    const auto default_it = computed_by_product.find(default_product);
+    if (default_it == computed_by_product.end()) {
+        status_box_->label("Selected example has no default product");
+        return;
+    }
+
+    const std::string manifest_path = write_example_manifest(
+        example_bundle_names_[static_cast<std::size_t>(bundle_idx)],
+        computed_by_product);
+    if (manifest_path.empty()) {
+        status_box_->label("Failed to build example spectra manifest");
+        return;
+    }
+
+    QueuedJob job;
+    job.status = "done";
+    job.config.job_name = example_bundle_names_[static_cast<std::size_t>(bundle_idx)].empty()
+                              ? "example"
+                              : example_bundle_names_[static_cast<std::size_t>(bundle_idx)];
+    job.config.input_value = smiles;
+    job.config.input_format = InputFormat::Smiles;
+    if (has_nmr && has_cd) {
+        job.config.workflow_kind = WorkflowKind::All;
+    } else if (has_cd) {
+        job.config.workflow_kind = WorkflowKind::Cd;
+    } else {
+        job.config.workflow_kind = WorkflowKind::Nmr;
+    }
+    job.config.solvent = solvent_choice_ != nullptr ? solvent_choice_->text(solvent_choice_->value()) : "cdcl3";
+    job.config.nucleus = default_product;
+    job.id.clear();
+    job.message = "example bundle loaded";
+    job.spectrum_csv = default_it->second;
+    job.spectra_manifest_csv = manifest_path;
+
+    int row_number = 0;
+    int job_index = -1;
+    {
+        std::lock_guard<std::mutex> lock(jobs_mutex_);
+        job.id = "q" + std::to_string(jobs_.size() + 1);
+        jobs_.push_back(job);
+        row_number = static_cast<int>(jobs_.size());
+        job_index = row_number - 1;
+    }
+
+    if (job_index >= 0) {
+        std::map<std::string, std::string> overlay_key_by_product;
+        std::string overlay_warning;
+        if (with_experimental) {
+            for (const auto &entry : experimental_by_product) {
+                const std::string &product = entry.first;
+                const std::string &exp_file = entry.second;
+                if (exp_file.empty()) {
+                    continue;
+                }
+                ec.clear();
+                if (!fs::exists(exp_file, ec) || ec) {
+                    if (overlay_warning.empty()) {
+                        overlay_warning = "Missing overlay: " + exp_file;
+                    }
+                    continue;
+                }
+                const auto loaded = load_experimental_spectrum(exp_file);
+                if (!loaded.error_message.empty()) {
+                    if (overlay_warning.empty()) {
+                        overlay_warning = experimental_import_failure_status(loaded);
+                    }
+                    continue;
+                }
+                std::string base_label = example_bundle_names_[static_cast<std::size_t>(bundle_idx)];
+                if (base_label.empty()) {
+                    base_label = "example";
+                }
+                base_label += " " + product;
+                const std::string overlay_key = make_unique_overlay_key(experimental_overlays_, base_label);
+                experimental_overlays_[overlay_key] = loaded.points;
+                experimental_overlay_paths_[overlay_key] = exp_file;
+                experimental_overlay_formats_[overlay_key] = loaded.detected_format;
+                overlay_key_by_product[product] = overlay_key;
+            }
+        }
+        if (!overlay_key_by_product.empty()) {
+            example_job_overlay_keys_[job_index] = overlay_key_by_product;
+        } else {
+            example_job_overlay_keys_.erase(job_index);
+        }
+        if (!overlay_warning.empty()) {
+            status_box_->copy_label(overlay_warning.c_str());
+        }
+    }
+
+    refresh_queue_browser();
+    queue_browser_->value(row_number);
+    on_select_job();
+    maybe_apply_example_overlay_for_active_selection();
+
+    std::ostringstream status;
+    status << "Loaded example bundle: " << job.config.job_name << " | products ";
+    bool first = true;
+    for (const auto &product : products) {
+        if (!first) {
+            status << ",";
+        }
+        status << product;
+        first = false;
+    }
+    if (with_experimental) {
+        const auto overlay_it = example_job_overlay_keys_.find(job_index);
+        const std::size_t count = (overlay_it != example_job_overlay_keys_.end()) ? overlay_it->second.size() : 0;
+        status << " | overlays " << count;
+    }
     status_box_->copy_label(status.str().c_str());
 }
 
@@ -2275,6 +3030,290 @@ void AppWindow::on_export_spectrum() {
     status_box_->copy_label(("Exported spectrum plot: " + out_path.string()).c_str());
 }
 
+bool AppWindow::maybe_show_queue_context_menu() {
+    if (queue_browser_ == nullptr) {
+        return false;
+    }
+    const int mx = Fl::event_x();
+    const int my = Fl::event_y();
+    if (mx < queue_browser_->x() || mx > queue_browser_->x() + queue_browser_->w()
+        || my < queue_browser_->y() || my > queue_browser_->y() + queue_browser_->h()) {
+        return false;
+    }
+
+    const int current_line = queue_browser_->value();
+    int target_line = browser_line_at_mouse(queue_browser_, my);
+    if (target_line <= 0) {
+        target_line = current_line;
+    }
+    if (target_line <= 0) {
+        return true;
+    }
+
+    const int current_index = (current_line > 0) ? (current_line - 1) : -1;
+    const int target_index = target_line - 1;
+
+    QueuedJob current_job;
+    QueuedJob target_job;
+    bool has_current = false;
+    bool has_target = false;
+    {
+        std::lock_guard<std::mutex> lock(jobs_mutex_);
+        if (current_index >= 0 && current_index < static_cast<int>(jobs_.size())) {
+            current_job = jobs_[static_cast<std::size_t>(current_index)];
+            has_current = true;
+        }
+        if (target_index >= 0 && target_index < static_cast<int>(jobs_.size())) {
+            target_job = jobs_[static_cast<std::size_t>(target_index)];
+            has_target = true;
+        }
+    }
+
+    const std::string current_name = has_current ? truncate_text(current_job.config.job_name, 20) : "selected job";
+    const std::string compare_label = "Compare to " + current_name;
+    const std::string clear_label = "Clear comparison";
+    const bool compare_enabled =
+        has_current && has_target && current_index != target_index
+        && current_job.status == "done" && target_job.status == "done";
+    const bool clear_enabled = comparison_job_index_ >= 0;
+
+    Fl_Menu_Item menu[] = {
+        {compare_label.c_str(), 0, nullptr, nullptr, compare_enabled ? 0 : FL_MENU_INACTIVE},
+        {clear_label.c_str(), 0, nullptr, nullptr, clear_enabled ? 0 : FL_MENU_INACTIVE},
+        {nullptr}
+    };
+
+    const Fl_Menu_Item *picked = menu->popup(mx, my);
+    if (picked == nullptr) {
+        return true;
+    }
+
+    if (picked == &menu[0] && compare_enabled) {
+        comparison_job_index_ = target_index;
+        manual_shift_pairs_.clear();
+        if (spectrum_widget_ != nullptr) {
+            spectrum_widget_->clear_manual_shift_pairs();
+        }
+        load_selected_job_visuals();
+        refresh_queue_browser();
+        status_box_->copy_label(
+            ("Comparing " + target_job.config.job_name + " to " + current_job.config.job_name).c_str());
+        return true;
+    }
+
+    if (picked == &menu[1] && clear_enabled) {
+        clear_comparison_state(true);
+        refresh_queue_browser();
+        status_box_->label("Cleared calculated comparison");
+        return true;
+    }
+
+    return true;
+}
+
+void AppWindow::clear_comparison_state(bool clear_selected_job) {
+    if (clear_selected_job) {
+        comparison_job_index_ = -1;
+    }
+    comparison_peak_rows_.clear();
+    manual_shift_pairs_.clear();
+    comparison_group_to_ppm_.clear();
+    comparison_group_to_atoms_.clear();
+    if (spectrum_widget_ != nullptr) {
+        spectrum_widget_->clear_comparison_points();
+    }
+    if (compare_structure_widget_ != nullptr) {
+        compare_structure_widget_->set_structure({}, {});
+        compare_structure_widget_->clear_highlight();
+    }
+    update_structure_compare_layout(false);
+}
+
+void AppWindow::update_structure_compare_layout(bool compare_mode) {
+    if (structure_widget_ == nullptr || compare_structure_widget_ == nullptr
+        || structure_current_label_ == nullptr || structure_compare_label_ == nullptr) {
+        return;
+    }
+
+    if (!compare_mode) {
+        structure_current_label_->hide();
+        structure_compare_label_->hide();
+        compare_structure_widget_->hide();
+        structure_widget_->resize(structure_area_x_, structure_area_y_, structure_area_w_, structure_area_h_);
+        return;
+    }
+
+    const int label_h = 16;
+    const int gap = 8;
+    const int split_w = (structure_area_w_ - gap) / 2;
+    const int widget_y = structure_area_y_ + label_h + 2;
+    const int widget_h = std::max(56, structure_area_h_ - label_h - 2);
+
+    structure_current_label_->resize(structure_area_x_, structure_area_y_, split_w, label_h);
+    structure_compare_label_->resize(structure_area_x_ + split_w + gap, structure_area_y_, split_w, label_h);
+    structure_current_label_->show();
+    structure_compare_label_->show();
+
+    structure_widget_->resize(structure_area_x_, widget_y, split_w, widget_h);
+    compare_structure_widget_->resize(structure_area_x_ + split_w + gap, widget_y, split_w, widget_h);
+    compare_structure_widget_->show();
+}
+
+void AppWindow::highlight_comparison_for_primary_group(int primary_group_id) {
+    if (compare_structure_widget_ == nullptr || comparison_group_to_atoms_.empty()) {
+        return;
+    }
+
+    int compare_group_id = -1;
+    for (const auto &pair : manual_shift_pairs_) {
+        if (pair.primary_group_id == primary_group_id) {
+            compare_group_id = pair.compare_group_id;
+            break;
+        }
+    }
+    if (compare_group_id <= 0) {
+        compare_structure_widget_->clear_highlight();
+        return;
+    }
+
+    auto atoms_it = comparison_group_to_atoms_.find(compare_group_id);
+    if (atoms_it == comparison_group_to_atoms_.end() || atoms_it->second.empty()) {
+        compare_structure_widget_->clear_highlight();
+        return;
+    }
+
+    if (is_proton_nucleus(active_nucleus_)) {
+        compare_structure_widget_->set_selected_atom(-1);
+        compare_structure_widget_->set_highlight_hydrogens(atoms_it->second);
+    } else {
+        compare_structure_widget_->set_highlight_hydrogens({});
+        compare_structure_widget_->set_selected_atom(atoms_it->second.front());
+    }
+}
+
+void AppWindow::apply_comparison_visuals(const QueuedJob &active_job) {
+    if (spectrum_widget_ == nullptr) {
+        return;
+    }
+
+    if (comparison_job_index_ < 0 || selected_job_index_ < 0 || comparison_job_index_ == selected_job_index_) {
+        clear_comparison_state(false);
+        return;
+    }
+
+    QueuedJob compare_job;
+    {
+        std::lock_guard<std::mutex> lock(jobs_mutex_);
+        if (comparison_job_index_ < 0 || comparison_job_index_ >= static_cast<int>(jobs_.size())) {
+            clear_comparison_state(true);
+            return;
+        }
+        compare_job = jobs_[static_cast<std::size_t>(comparison_job_index_)];
+    }
+
+    if (compare_job.status != "done") {
+        clear_comparison_state(false);
+        status_box_->copy_label(("Comparison job not ready: " + compare_job.config.job_name).c_str());
+        return;
+    }
+
+    const auto compare_products = spectral_products_for_job(compare_job);
+    auto it = compare_products.find(active_nucleus_);
+    if (it == compare_products.end() || it->second.spectrum_csv.empty()) {
+        clear_comparison_state(false);
+        status_box_->copy_label(
+            ("Comparison job has no " + active_nucleus_ + " spectrum: " + compare_job.config.job_name).c_str());
+        return;
+    }
+
+    const auto compare_points = load_spectrum_csv(it->second.spectrum_csv);
+    if (compare_points.empty()) {
+        clear_comparison_state(false);
+        status_box_->copy_label(
+            ("Comparison spectrum unreadable for " + active_nucleus_ + ": " + compare_job.config.job_name).c_str());
+        return;
+    }
+
+    comparison_peak_rows_.clear();
+    comparison_group_to_ppm_.clear();
+    comparison_group_to_atoms_.clear();
+    const auto compare_peak_rows = read_peak_rows(it->second.peaks_csv);
+    for (const auto &row : compare_peak_rows) {
+        ComparisonPeakMarker marker;
+        marker.group_id = row.group_id;
+        marker.center_ppm = row.center_ppm;
+        marker.label = row.multiplicity;
+        comparison_peak_rows_.push_back(marker);
+        comparison_group_to_ppm_[row.group_id] = row.center_ppm;
+    }
+    comparison_group_to_atoms_ = read_assignments(it->second.assignments_csv);
+
+    manual_shift_pairs_.clear();
+    spectrum_widget_->set_comparison_points(compare_points);
+    spectrum_widget_->set_comparison_peak_markers(comparison_peak_rows_);
+    spectrum_widget_->set_manual_shift_pairs(manual_shift_pairs_);
+
+    if (compare_structure_widget_ != nullptr) {
+        const auto compare_atoms = read_structure_atoms(compare_job.structure_atoms_csv);
+        const auto compare_bonds = read_structure_bonds(compare_job.structure_bonds_csv);
+        compare_structure_widget_->set_structure(compare_atoms, compare_bonds);
+        compare_structure_widget_->set_empty_message("No comparison structure");
+    }
+    if (structure_current_label_ != nullptr) {
+        structure_current_label_->copy_label(("A: " + truncate_text(active_job.config.job_name, 14)).c_str());
+    }
+    if (structure_compare_label_ != nullptr) {
+        structure_compare_label_->copy_label(("B: " + truncate_text(compare_job.config.job_name, 14)).c_str());
+    }
+    update_structure_compare_layout(true);
+
+    std::ostringstream status;
+    status << "Comparing " << compare_job.config.job_name << " vs " << active_job.config.job_name
+           << " (" << active_nucleus_ << ")";
+    if (!comparison_peak_rows_.empty()) {
+        status << " | " << comparison_peak_rows_.size() << " compare peaks";
+    }
+    status_box_->copy_label(status.str().c_str());
+}
+
+void AppWindow::on_manual_shift_pair(int primary_group_id, int compare_group_id) {
+    auto primary_it = primary_group_to_ppm_.find(primary_group_id);
+    auto compare_it = comparison_group_to_ppm_.find(compare_group_id);
+    if (primary_it == primary_group_to_ppm_.end() || compare_it == comparison_group_to_ppm_.end()) {
+        status_box_->label("Shift pair unavailable for selected peaks");
+        return;
+    }
+
+    const double primary_ppm = primary_it->second;
+    const double compare_ppm = compare_it->second;
+    const double delta_ppm = compare_ppm - primary_ppm;
+
+    manual_shift_pairs_.erase(
+        std::remove_if(
+            manual_shift_pairs_.begin(),
+            manual_shift_pairs_.end(),
+            [primary_group_id, compare_group_id](const ManualShiftPair &pair) {
+                return pair.primary_group_id == primary_group_id || pair.compare_group_id == compare_group_id;
+            }),
+        manual_shift_pairs_.end());
+
+    ManualShiftPair pair;
+    pair.primary_group_id = primary_group_id;
+    pair.compare_group_id = compare_group_id;
+    pair.primary_ppm = primary_ppm;
+    pair.compare_ppm = compare_ppm;
+    pair.delta_ppm = delta_ppm;
+    manual_shift_pairs_.push_back(pair);
+    spectrum_widget_->set_manual_shift_pairs(manual_shift_pairs_);
+    on_peak_picked(primary_group_id);
+
+    std::ostringstream status;
+    status << "Paired G" << primary_group_id << " with cmp G" << compare_group_id
+           << " | delta " << std::showpos << std::fixed << std::setprecision(2) << delta_ppm
+           << " ppm " << (delta_ppm > 0.0 ? "(downfield)" : "(upfield)");
+    status_box_->copy_label(status.str().c_str());
+}
+
 void AppWindow::on_peak_picked(int group_id) {
     if (group_id <= 0) {
         spectrum_widget_->set_selected_groups({});
@@ -2284,6 +3323,9 @@ void AppWindow::on_peak_picked(int group_id) {
         if (structure_widget_ != nullptr) {
             structure_widget_->set_selected_atom(-1);
             structure_widget_->set_highlight_hydrogens({});
+        }
+        if (compare_structure_widget_ != nullptr) {
+            compare_structure_widget_->clear_highlight();
         }
         status_box_->label("Cleared peak highlight");
         return;
@@ -2322,6 +3364,7 @@ void AppWindow::on_peak_picked(int group_id) {
             structure_widget_->set_highlight_hydrogens({});
         }
     }
+    highlight_comparison_for_primary_group(group_id);
 
     std::ostringstream status;
     status << "Selected group " << group_id;
@@ -2372,6 +3415,9 @@ void AppWindow::on_structure_atom_picked(int atom_index, const std::vector<int> 
         if (pr != group_to_peak_row_.end()) {
             peak_browser_->value(pr->second);
         }
+        highlight_comparison_for_primary_group(primary_group);
+    } else if (compare_structure_widget_ != nullptr) {
+        compare_structure_widget_->clear_highlight();
     }
 
     if (!nucleus_targets.empty()) {
@@ -2403,6 +3449,77 @@ void AppWindow::on_structure_atom_picked(int atom_index, const std::vector<int> 
         }
     } else {
         status << " (no assigned " << active_nucleus_ << " groups)";
+    }
+    status_box_->copy_label(status.str().c_str());
+}
+
+void AppWindow::on_compare_structure_atom_picked(int atom_index, const std::vector<int> &attached_hydrogens) {
+    if (atom_index <= 0 || compare_structure_widget_ == nullptr) {
+        return;
+    }
+
+    std::vector<int> nucleus_targets = attached_hydrogens;
+    if (!is_proton_nucleus(active_nucleus_)) {
+        nucleus_targets = {atom_index};
+    }
+
+    compare_structure_widget_->set_selected_atom(atom_index);
+    if (is_proton_nucleus(active_nucleus_)) {
+        compare_structure_widget_->set_highlight_hydrogens(nucleus_targets);
+    } else {
+        compare_structure_widget_->set_highlight_hydrogens({});
+    }
+
+    std::vector<int> matched_compare_groups;
+    for (const auto &entry : comparison_group_to_atoms_) {
+        bool intersects = false;
+        for (int target_atom : nucleus_targets) {
+            if (std::find(entry.second.begin(), entry.second.end(), target_atom) != entry.second.end()) {
+                intersects = true;
+                break;
+            }
+        }
+        if (intersects) {
+            matched_compare_groups.push_back(entry.first);
+        }
+    }
+    std::sort(matched_compare_groups.begin(), matched_compare_groups.end());
+
+    std::vector<int> matched_primary_groups;
+    for (int compare_group_id : matched_compare_groups) {
+        for (const auto &pair : manual_shift_pairs_) {
+            if (pair.compare_group_id == compare_group_id) {
+                matched_primary_groups.push_back(pair.primary_group_id);
+            }
+        }
+    }
+    std::sort(matched_primary_groups.begin(), matched_primary_groups.end());
+    matched_primary_groups.erase(
+        std::unique(matched_primary_groups.begin(), matched_primary_groups.end()),
+        matched_primary_groups.end());
+    if (!matched_primary_groups.empty()) {
+        spectrum_widget_->set_selected_groups(matched_primary_groups);
+    }
+
+    std::ostringstream status;
+    status << "Selected compare atom " << atom_index;
+    if (!matched_compare_groups.empty()) {
+        status << " | cmp groups:";
+        for (std::size_t i = 0; i < matched_compare_groups.size(); ++i) {
+            status << matched_compare_groups[i];
+            if (i + 1 < matched_compare_groups.size()) {
+                status << ",";
+            }
+        }
+    }
+    if (!matched_primary_groups.empty()) {
+        status << " | mapped A groups:";
+        for (std::size_t i = 0; i < matched_primary_groups.size(); ++i) {
+            status << matched_primary_groups[i];
+            if (i + 1 < matched_primary_groups.size()) {
+                status << ",";
+            }
+        }
     }
     status_box_->copy_label(status.str().c_str());
 }
@@ -2447,6 +3564,7 @@ void AppWindow::apply_nucleus_visuals(const QueuedJob &job, const std::string &n
     atom_to_row_.clear();
     atom_row_to_atom_.clear();
     atom_row_base_label_.clear();
+    primary_group_to_ppm_.clear();
 
     std::vector<PeakMarker> markers;
     for (const auto &row : peak_rows) {
@@ -2464,8 +3582,10 @@ void AppWindow::apply_nucleus_visuals(const QueuedJob &job, const std::string &n
         marker.multiplicity = row.multiplicity;
         marker.j_hz = row.j_hz;
         markers.push_back(marker);
+        primary_group_to_ppm_[row.group_id] = row.center_ppm;
     }
     spectrum_widget_->set_peak_markers(std::move(markers));
+    apply_comparison_visuals(job);
 
     std::vector<int> atoms;
     for (const auto &entry : group_to_atoms_) {
@@ -2512,8 +3632,10 @@ void AppWindow::apply_nucleus_visuals(const QueuedJob &job, const std::string &n
 void AppWindow::load_selected_job_visuals() {
     const int selected = queue_browser_->value();
     if (selected <= 0) {
+        selected_job_index_ = -1;
         return;
     }
+    selected_job_index_ = selected - 1;
 
     QueuedJob job;
     {
@@ -2543,20 +3665,7 @@ void AppWindow::load_selected_job_visuals() {
         structure_widget_->set_structure(std::move(structure_atoms), std::move(structure_bonds));
     }
 
-    active_spectral_products_.clear();
-    if (!job.spectra_manifest_csv.empty()) {
-        active_spectral_products_ = read_spectra_manifest(job.spectra_manifest_csv);
-    }
-    if (active_spectral_products_.empty() && !job.spectrum_csv.empty()) {
-        const std::string fallback_nucleus =
-            (job.config.workflow_kind == WorkflowKind::Cd) ? "CD" : normalize_nucleus_label(job.config.nucleus);
-        SpectralProductFiles fallback;
-        fallback.label = fallback_nucleus.empty() ? "1H" : fallback_nucleus;
-        fallback.spectrum_csv = job.spectrum_csv;
-        fallback.peaks_csv = job.peaks_csv;
-        fallback.assignments_csv = job.assignments_csv;
-        active_spectral_products_[fallback.label] = std::move(fallback);
-    }
+    active_spectral_products_ = spectral_products_for_job(job);
 
     if (spectrum_nucleus_choice_ != nullptr) {
         spectrum_nucleus_choice_->clear();
@@ -2646,6 +3755,98 @@ void AppWindow::apply_reference_peaks(const std::string &solvent, const std::str
     reference_choice_->value(0);
 }
 
+void AppWindow::refresh_example_choice() {
+    if (example_choice_ == nullptr) {
+        return;
+    }
+
+    example_choice_->clear();
+    example_case_rows_.clear();
+    example_bundle_names_.clear();
+    example_bundle_row_indices_.clear();
+    example_choice_case_indices_.clear();
+
+    example_choice_->add("Examples: choose molecule");
+    example_choice_case_indices_.push_back(-1);
+
+    const std::string cases_csv = find_examples_case_csv();
+    const auto cases = load_example_cases(cases_csv);
+
+    struct ExampleBundleRow {
+        std::string key;
+        std::string display_name;
+        std::vector<int> row_indices;
+    };
+
+    std::vector<ExampleBundleRow> bundles;
+    std::unordered_map<std::string, int> bundle_key_to_idx;
+
+    for (const auto &example : cases) {
+        example_case_rows_.push_back(example.csv_row);
+        const int row_index = static_cast<int>(example_case_rows_.size()) - 1;
+
+        std::string bundle_key = trim_copy(example.smiles);
+        if (bundle_key.empty()) {
+            bundle_key = lowercase_copy(example.case_name);
+        }
+        if (bundle_key.empty()) {
+            continue;
+        }
+
+        auto it = bundle_key_to_idx.find(bundle_key);
+        if (it == bundle_key_to_idx.end()) {
+            ExampleBundleRow bundle;
+            bundle.key = bundle_key;
+            bundle.display_name = infer_example_bundle_name(example);
+            if (bundle.display_name.empty()) {
+                bundle.display_name = "Example";
+            }
+            bundle.row_indices.push_back(row_index);
+            const int new_idx = static_cast<int>(bundles.size());
+            bundles.push_back(std::move(bundle));
+            bundle_key_to_idx[bundle_key] = new_idx;
+        } else {
+            bundles[static_cast<std::size_t>(it->second)].row_indices.push_back(row_index);
+        }
+    }
+
+    std::sort(bundles.begin(), bundles.end(), [](const ExampleBundleRow &a, const ExampleBundleRow &b) {
+        return lowercase_copy(a.display_name) < lowercase_copy(b.display_name);
+    });
+
+    for (const auto &bundle : bundles) {
+        example_bundle_names_.push_back(bundle.display_name);
+        example_bundle_row_indices_.push_back(bundle.row_indices);
+        const int bundle_index = static_cast<int>(example_bundle_names_.size()) - 1;
+        example_choice_case_indices_.push_back(bundle_index);
+        example_choice_->add(bundle.display_name.c_str());
+    }
+
+    example_choice_->value(0);
+
+    if (example_bundle_names_.empty()) {
+        if (!cases_csv.empty()) {
+            status_box_->copy_label(("No examples found in " + cases_csv).c_str());
+        } else {
+            status_box_->label("No examples file found (tests/spectra_comparison_cases.csv)");
+        }
+        if (load_example_calc_button_ != nullptr) {
+            load_example_calc_button_->deactivate();
+        }
+        if (load_example_bundle_button_ != nullptr) {
+            load_example_bundle_button_->deactivate();
+        }
+        return;
+    }
+
+    if (load_example_calc_button_ != nullptr) {
+        load_example_calc_button_->activate();
+    }
+    if (load_example_bundle_button_ != nullptr) {
+        load_example_bundle_button_->activate();
+    }
+}
+
 void AppWindow::refresh_experimental_choice() {
     if (experimental_choice_ == nullptr) {
         return;
@@ -2678,6 +3879,36 @@ void AppWindow::refresh_experimental_choice() {
     }
     experimental_choice_->value(selected_index);
     experimental_choice_->activate();
+}
+
+void AppWindow::maybe_apply_example_overlay_for_active_selection() {
+    if (selected_job_index_ < 0) {
+        return;
+    }
+    auto by_job = example_job_overlay_keys_.find(selected_job_index_);
+    if (by_job == example_job_overlay_keys_.end()) {
+        return;
+    }
+
+    const std::string nucleus = normalize_nucleus_label(active_nucleus_);
+    auto by_nucleus = by_job->second.find(nucleus);
+    if (by_nucleus == by_job->second.end()) {
+        active_experimental_overlay_key_.clear();
+        refresh_experimental_choice();
+        apply_active_experimental_overlay();
+        return;
+    }
+
+    if (experimental_overlays_.find(by_nucleus->second) == experimental_overlays_.end()) {
+        active_experimental_overlay_key_.clear();
+        refresh_experimental_choice();
+        apply_active_experimental_overlay();
+        return;
+    }
+
+    active_experimental_overlay_key_ = by_nucleus->second;
+    refresh_experimental_choice();
+    apply_active_experimental_overlay();
 }
 
 void AppWindow::apply_active_experimental_overlay() {
@@ -2950,11 +4181,27 @@ void AppWindow::refresh_queue_browser() {
     std::lock_guard<std::mutex> lock(jobs_mutex_);
 
     const int selected = queue_browser_->value();
+    const int selected_index = (selected > 0) ? (selected - 1) : -1;
+    int primary_index = selected_job_index_;
+    if (primary_index < 0) {
+        primary_index = selected_index;
+    }
     queue_browser_->clear();
 
     for (std::size_t i = 0; i < jobs_.size(); ++i) {
-        const bool active = (static_cast<int>(i) == active_job_index_);
-        queue_browser_->add(format_label_for(jobs_[i], active).c_str());
+        const int row_index = static_cast<int>(i);
+        const bool is_selected = (row_index == selected_index);
+        const bool is_primary_role = (row_index == primary_index);
+        const bool is_compare_role = (row_index == comparison_job_index_);
+        queue_browser_->add(format_label_for(jobs_[i], is_selected, is_primary_role, is_compare_role).c_str());
+        const int browser_row = queue_browser_->size();
+        if (is_primary_role) {
+            queue_browser_->icon(browser_row, &kRoleBlueDot);
+        } else if (is_compare_role) {
+            queue_browser_->icon(browser_row, &kRoleGreenDot);
+        } else {
+            queue_browser_->icon(browser_row, nullptr);
+        }
     }
 
     if (selected > 0 && selected <= queue_browser_->size()) {

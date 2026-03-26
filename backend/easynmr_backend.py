@@ -374,6 +374,12 @@ def write_structure_geometry_csv(mol: Chem.Mol, atoms_csv: Path, bonds_csv: Path
     rdDepictor.SetPreferCoordGen(True)
     rdDepictor.Compute2DCoords(mol2d)
     conf = mol2d.GetConformer()
+    Chem.AssignStereochemistry(mol2d, cleanIt=True, force=True)
+    try:
+        Chem.WedgeMolBonds(mol2d, conf)
+    except Exception:
+        # Keep 2D geometry export resilient; fallback is plain bonds.
+        pass
 
     with atoms_csv.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
@@ -396,12 +402,28 @@ def write_structure_geometry_csv(mol: Chem.Mol, atoms_csv: Path, bonds_csv: Path
 
     with bonds_csv.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["atom_a", "atom_b", "order"])
+        writer.writerow(["atom_a", "atom_b", "order", "stereo_style", "stereo_from_atom"])
         for bond in mol2d.GetBonds():
             a = bond.GetBeginAtom().GetAtomMapNum()
             b = bond.GetEndAtom().GetAtomMapNum()
             order = int(round(float(bond.GetBondTypeAsDouble())))
-            writer.writerow([a, b, max(1, order)])
+            stereo_style = "none"
+            stereo_from_atom = 0
+            bond_dir = str(bond.GetBondDir())
+            if bond_dir in ("BEGINWEDGE", "BEGINWEDGEBOND", "BEGINUPRIGHT"):
+                stereo_style = "wedge"
+                stereo_from_atom = a
+            elif bond_dir in ("BEGINDASH", "BEGINDASHBOND", "BEGINDOWNRIGHT"):
+                stereo_style = "dash"
+                stereo_from_atom = a
+            elif bond_dir in ("ENDUPRIGHT",):
+                stereo_style = "wedge"
+                stereo_from_atom = b
+            elif bond_dir in ("ENDDOWNRIGHT",):
+                stereo_style = "dash"
+                stereo_from_atom = b
+
+            writer.writerow([a, b, max(1, order), stereo_style, stereo_from_atom])
 
 
 def embed_conformers(mol: Chem.Mol, max_conformers: int, seed: int, warnings: List[str]) -> List[int]:

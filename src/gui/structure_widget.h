@@ -22,6 +22,8 @@ struct StructureBond {
     int atom_a = 0; // 1-based atom index
     int atom_b = 0; // 1-based atom index
     int order = 1;
+    std::string stereo_style = "none"; // none | wedge | dash
+    int stereo_from_atom = 0;          // 1-based atom index at wedge apex (if any)
 };
 
 class StructureWidget : public Fl_Widget {
@@ -32,6 +34,7 @@ class StructureWidget : public Fl_Widget {
     void set_empty_message(std::string message);
     void set_selected_atom(int atom_index);
     void set_highlight_hydrogens(const std::vector<int> &hydrogens);
+    void set_highlight_palette(Fl_Color selected_fill, Fl_Color selected_border, Fl_Color attached_fill);
     void clear_highlight();
     void set_on_atom_selected(std::function<void(int, const std::vector<int> &)> callback);
 
@@ -48,6 +51,9 @@ class StructureWidget : public Fl_Widget {
     std::function<void(int, const std::vector<int> &)> on_atom_selected_;
     std::unordered_map<int, std::pair<int, int>> screen_positions_;
     std::string empty_message_ = "No 2D structure";
+    Fl_Color selected_fill_color_ = FL_WHITE;
+    Fl_Color selected_border_color_ = FL_DARK_GREEN;
+    Fl_Color attached_fill_color_ = FL_LIGHT2;
 };
 
 } // namespace easynmr

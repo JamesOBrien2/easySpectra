@@ -45,10 +45,61 @@ bool has_overlap(const std::vector<int> &attached_hydrogens, const std::unordere
     return false;
 }
 
+void draw_wedge_bond(int ax, int ay, int bx, int by, Fl_Color color) {
+    const double dx = static_cast<double>(bx - ax);
+    const double dy = static_cast<double>(by - ay);
+    const double len = std::max(1.0, std::hypot(dx, dy));
+    const double nx = -dy / len;
+    const double ny = dx / len;
+    const double half_width = 5.5;
+
+    const int x1 = ax;
+    const int y1 = ay;
+    const int x2 = static_cast<int>(bx + nx * half_width);
+    const int y2 = static_cast<int>(by + ny * half_width);
+    const int x3 = static_cast<int>(bx - nx * half_width);
+    const int y3 = static_cast<int>(by - ny * half_width);
+
+    fl_color(color);
+    fl_begin_polygon();
+    fl_vertex(static_cast<double>(x1), static_cast<double>(y1));
+    fl_vertex(static_cast<double>(x2), static_cast<double>(y2));
+    fl_vertex(static_cast<double>(x3), static_cast<double>(y3));
+    fl_end_polygon();
+}
+
+void draw_hashed_wedge_bond(int ax, int ay, int bx, int by, Fl_Color color) {
+    const double dx = static_cast<double>(bx - ax);
+    const double dy = static_cast<double>(by - ay);
+    const double len = std::max(1.0, std::hypot(dx, dy));
+    const double nx = -dy / len;
+    const double ny = dx / len;
+    constexpr int kStripes = 7;
+    const double max_half_width = 5.5;
+
+    fl_color(color);
+    fl_line_style(FL_SOLID, 1);
+    for (int i = 1; i <= kStripes; ++i) {
+        const double t = static_cast<double>(i) / static_cast<double>(kStripes + 1);
+        const double cx = ax + dx * t;
+        const double cy = ay + dy * t;
+        const double hw = max_half_width * t;
+        const int x1 = static_cast<int>(cx - nx * hw);
+        const int y1 = static_cast<int>(cy - ny * hw);
+        const int x2 = static_cast<int>(cx + nx * hw);
+        const int y2 = static_cast<int>(cy + ny * hw);
+        fl_line(x1, y1, x2, y2);
+    }
+}
+
 } // namespace
 
 StructureWidget::StructureWidget(int x, int y, int w, int h, const char *label)
-    : Fl_Widget(x, y, w, h, label) {}
+    : Fl_Widget(x, y, w, h, label) {
+    selected_fill_color_ = rgb(173, 214, 214);
+    selected_border_color_ = rgb(84, 129, 128);
+    attached_fill_color_ = rgb(210, 229, 246);
+}
 
 void StructureWidget::set_structure(std::vector<StructureAtom> atoms, std::vector<StructureBond> bonds) {
     atoms_ = std::move(atoms);
@@ -78,6 +129,13 @@ void StructureWidget::set_highlight_hydrogens(const std::vector<int> &hydrogens)
     for (int h : hydrogens) {
         highlighted_hydrogens_.insert(h);
     }
+    redraw();
+}
+
+void StructureWidget::set_highlight_palette(Fl_Color selected_fill, Fl_Color selected_border, Fl_Color attached_fill) {
+    selected_fill_color_ = selected_fill;
+    selected_border_color_ = selected_border;
+    attached_fill_color_ = attached_fill;
     redraw();
 }
 
@@ -156,6 +214,31 @@ void StructureWidget::draw() {
         const auto [ax, ay] = a_it->second;
         const auto [bx, by] = b_it->second;
 
+        int from_atom = bond.atom_a;
+        int to_atom = bond.atom_b;
+        if (bond.stereo_from_atom == bond.atom_b) {
+            from_atom = bond.atom_b;
+            to_atom = bond.atom_a;
+        } else if (bond.stereo_from_atom == bond.atom_a) {
+            from_atom = bond.atom_a;
+            to_atom = bond.atom_b;
+        }
+
+        if (bond.stereo_style == "wedge" || bond.stereo_style == "dash") {
+            const auto from_it = screen_positions_.find(from_atom);
+            const auto to_it = screen_positions_.find(to_atom);
+            if (from_it != screen_positions_.end() && to_it != screen_positions_.end()) {
+                const auto [fx, fy] = from_it->second;
+                const auto [tx, ty] = to_it->second;
+                if (bond.stereo_style == "wedge") {
+                    draw_wedge_bond(fx, fy, tx, ty, rgb(95, 107, 130));
+                } else {
+                    draw_hashed_wedge_bond(fx, fy, tx, ty, rgb(95, 107, 130));
+                }
+                continue;
+            }
+        }
+
         fl_line_style(FL_SOLID, 2);
         fl_line(ax, ay, bx, by);
         if (bond.order >= 2) {
@@ -179,11 +262,11 @@ void StructureWidget::draw() {
         const bool touches_highlight = has_overlap(atom.attached_hydrogens, highlighted_hydrogens_);
 
         if (is_selected) {
-            fl_color(rgb(173, 214, 214));
+            fl_color(selected_fill_color_);
             fl_pie(sx - 16, sy - 16, 32, 32, 0, 360);
         }
         if (touches_highlight) {
-            fl_color(rgb(210, 229, 246));
+            fl_color(attached_fill_color_);
             fl_pie(sx - 13, sy - 13, 26, 26, 0, 360);
         }
 
@@ -191,7 +274,7 @@ void StructureWidget::draw() {
         fl_color(element_color(atom.element));
         fl_pie(sx - radius, sy - radius, radius * 2, radius * 2, 0, 360);
 
-        fl_color(is_selected ? rgb(84, 129, 128) : rgb(78, 86, 102));
+        fl_color(is_selected ? selected_border_color_ : rgb(78, 86, 102));
         fl_line_style(FL_SOLID, is_selected ? 2 : 1);
         fl_arc(sx - radius, sy - radius, radius * 2, radius * 2, 0, 360);
     }
