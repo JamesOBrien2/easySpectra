@@ -12,8 +12,10 @@
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Choice.H>
 #include <FL/Fl_Double_Window.H>
+#include <FL/Fl_Group.H>
 #include <FL/Fl_Hold_Browser.H>
 #include <FL/Fl_Input.H>
+#include <FL/Fl_Tabs.H>
 
 #include <atomic>
 #include <future>
@@ -72,7 +74,6 @@ class AppWindow : public Fl_Double_Window {
     static void on_clear_experimental_cb(Fl_Widget *, void *userdata);
     static void on_export_spectrum_cb(Fl_Widget *, void *userdata);
     static void on_select_example_cb(Fl_Widget *, void *userdata);
-    static void on_load_example_calc_cb(Fl_Widget *, void *userdata);
     static void on_load_example_bundle_cb(Fl_Widget *, void *userdata);
     static void on_debounced_preview_cb(void *userdata);
     static void on_worker_awake(void *userdata);
@@ -144,13 +145,13 @@ class AppWindow : public Fl_Double_Window {
     Fl_Hold_Browser *atom_browser_ = nullptr;
     Fl_Choice *spectrum_nucleus_choice_ = nullptr;
     Fl_Choice *experimental_choice_ = nullptr;
-    Fl_Choice *example_choice_ = nullptr;
+    Fl_Hold_Browser *example_browser_ = nullptr;
+    Fl_Box *example_detail_box_ = nullptr;
+    Fl_Button *open_example_button_ = nullptr;
     StructureWidget *structure_widget_ = nullptr;
     StructureWidget *compare_structure_widget_ = nullptr;
     Fl_Box *structure_current_label_ = nullptr;
     Fl_Box *structure_compare_label_ = nullptr;
-    Fl_Button *load_example_calc_button_ = nullptr;
-    Fl_Button *load_example_bundle_button_ = nullptr;
     Fl_Choice *reference_choice_ = nullptr;
     Fl_Button *load_experimental_button_ = nullptr;
     Fl_Button *clear_experimental_button_ = nullptr;
