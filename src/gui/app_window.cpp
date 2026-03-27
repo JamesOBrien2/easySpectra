@@ -1664,35 +1664,7 @@ AppWindow::AppWindow(int w, int h, const char *title)
     queue_browser_->column_char('\t');
     queue_browser_->column_widths(queue_col_widths);
 
-    auto *example_title = new Fl_Box(panel_x + 10, panel_y + 594, panel_w - 20, 18, "Examples");
-    example_title->box(FL_NO_BOX);
-    example_title->labelsize(12);
-    example_title->labelcolor(ui(82, 96, 118));
-    example_title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-
-    example_choice_ = new Fl_Choice(panel_x + 10, panel_y + 612, panel_w - 20, 24);
-    example_choice_->box(FL_DOWN_BOX);
-    example_choice_->color(ui(255, 255, 255));
-    example_choice_->labelsize(11);
-    example_choice_->add("Examples: none");
-    example_choice_->value(0);
-    example_choice_->callback(on_select_example_cb, this);
-
-    load_example_calc_button_ = new Fl_Button(panel_x + 10, panel_y + 640, 102, 24, "Load Calc");
-    load_example_calc_button_->callback(on_load_example_calc_cb, this);
-    load_example_calc_button_->box(FL_UP_BOX);
-    load_example_calc_button_->color(ui(206, 220, 238));
-    load_example_calc_button_->labelcolor(ui(60, 74, 95));
-    load_example_calc_button_->labelsize(11);
-
-    load_example_bundle_button_ = new Fl_Button(panel_x + 116, panel_y + 640, 102, 24, "Calc+Exp");
-    load_example_bundle_button_->callback(on_load_example_bundle_cb, this);
-    load_example_bundle_button_->box(FL_UP_BOX);
-    load_example_bundle_button_->color(ui(190, 220, 207));
-    load_example_bundle_button_->labelcolor(ui(55, 82, 69));
-    load_example_bundle_button_->labelsize(11);
-
-    run_selected_button_ = new Fl_Button(panel_x + 224, panel_y + 640, 100, 24, "Run Selected");
+    run_selected_button_ = new Fl_Button(panel_x + 10, panel_y + 596, 100, 24, "Run Selected");
     run_selected_button_->callback(on_run_selected_cb, this);
     run_selected_button_->box(FL_UP_BOX);
     run_selected_button_->color(ui(186, 204, 229));
@@ -1700,7 +1672,7 @@ AppWindow::AppWindow(int w, int h, const char *title)
     run_selected_button_->labelfont(FL_HELVETICA_BOLD);
     run_selected_button_->labelsize(11);
 
-    status_box_ = new Fl_Box(panel_x + 10, panel_y + 668, panel_w - 20, 26, "Idle");
+    status_box_ = new Fl_Box(panel_x + 10, panel_y + 626, panel_w - 20, 26, "Idle");
     status_box_->box(FL_FLAT_BOX);
     status_box_->color(ui(229, 236, 246));
     status_box_->labelsize(11);
@@ -1747,50 +1719,7 @@ AppWindow::AppWindow(int w, int h, const char *title)
         "or any generic tab/comma/space-separated file.\n"
         "Shortcut: Ctrl+L / Cmd+L");
 
-    clear_experimental_button_ = new Fl_Button(right_x + 414, right_y + 6, 84, 24, "Clear Exp");
-    clear_experimental_button_->callback(on_clear_experimental_cb, this);
-    clear_experimental_button_->box(FL_UP_BOX);
-    clear_experimental_button_->color(ui(226, 232, 241));
-    clear_experimental_button_->labelcolor(ui(87, 98, 113));
-    clear_experimental_button_->labelsize(11);
-
-    const int top_gap = 6;
-    const int toolbar_left = right_x + 504;
-    const int toolbar_right = right_x + right_w - 10;
-    const int toolbar_available = std::max(0, toolbar_right - toolbar_left);
-
-    int export_w = 78;
-    int experimental_w = 150;
-    int reference_w = 150;
-    const int min_export_w = 64;
-    const int min_experimental_w = 110;
-    const int min_reference_w = 104;
-
-    int needed = export_w + experimental_w + reference_w + (2 * top_gap);
-    if (needed > toolbar_available) {
-        int overflow = needed - toolbar_available;
-        const int ref_reduction = std::min(overflow, reference_w - min_reference_w);
-        reference_w -= ref_reduction;
-        overflow -= ref_reduction;
-
-        const int exp_reduction = std::min(overflow, experimental_w - min_experimental_w);
-        experimental_w -= exp_reduction;
-        overflow -= exp_reduction;
-
-        const int export_reduction = std::min(overflow, export_w - min_export_w);
-        export_w -= export_reduction;
-        overflow -= export_reduction;
-
-        if (overflow > 0) {
-            reference_w = std::max(min_reference_w, reference_w - overflow);
-        }
-    }
-
-    const int reference_x = toolbar_right - reference_w;
-    const int experimental_x = reference_x - top_gap - experimental_w;
-    const int export_x = experimental_x - top_gap - export_w;
-
-    export_spectrum_button_ = new Fl_Button(export_x, right_y + 6, export_w, 24, "Export");
+    export_spectrum_button_ = new Fl_Button(right_x + 416, right_y + 6, 84, 24, "Export");
     export_spectrum_button_->callback(on_export_spectrum_cb, this);
     export_spectrum_button_->box(FL_UP_BOX);
     export_spectrum_button_->color(ui(201, 216, 234));
@@ -1798,83 +1727,169 @@ AppWindow::AppWindow(int w, int h, const char *title)
     export_spectrum_button_->labelsize(11);
     export_spectrum_button_->tooltip("Export the current spectrum plot as PNG or PPM.\nShortcut: Ctrl+E / Cmd+E");
 
-    experimental_choice_ = new Fl_Choice(experimental_x, right_y + 6, experimental_w, 24);
-    experimental_choice_->box(FL_DOWN_BOX);
-    experimental_choice_->color(ui(255, 255, 255));
-    experimental_choice_->labelsize(11);
-    experimental_choice_->add("Exp: none");
-    experimental_choice_->value(0);
-    experimental_choice_->callback(on_select_experimental_cb, this);
+    // ── Bottom Fl_Tabs: Peaks | Workflow | Examples (250px) ─────────────────
+    const int tabs_y = right_y + spectrum_h;
+    const int tabs_h = h - tabs_y - 12;
+    const int tab_inner_y = tabs_y + 30;
+    const int tab_inner_h = tabs_h - 30;
 
-    reference_choice_ = new Fl_Choice(reference_x, right_y + 6, reference_w, 24);
-    reference_choice_->box(FL_DOWN_BOX);
-    reference_choice_->color(ui(255, 255, 255));
-    reference_choice_->labelsize(11);
-    reference_choice_->add("Refs: none");
-    reference_choice_->value(0);
-    reference_choice_->callback(on_select_reference_cb, this);
+    auto *bottom_tabs = new Fl_Tabs(right_x, tabs_y, right_w, tabs_h);
+    bottom_tabs->box(FL_THIN_UP_BOX);
+    bottom_tabs->color(ui(243, 247, 253));
+    bottom_tabs->labelsize(11);
 
-    auto *peak_title = new Fl_Box(right_x, right_y + spectrum_h + 8, right_w / 2 - 6, 20, "Peak Groups");
-    peak_title->box(FL_NO_BOX);
-    peak_title->labelsize(12);
-    peak_title->labelcolor(ui(80, 90, 105));
-    peak_title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    peak_browser_ = new Fl_Hold_Browser(right_x, right_y + spectrum_h + 30, right_w / 2 - 6, 88);
-    peak_browser_->callback(on_select_peak_cb, this);
-    peak_browser_->box(FL_DOWN_BOX);
-    peak_browser_->color(ui(255, 255, 255));
-    peak_browser_->selection_color(ui(224, 236, 248));
-    peak_browser_->textsize(11);
-
-    auto *atom_title = new Fl_Box(right_x + right_w / 2 + 6, right_y + spectrum_h + 8, right_w / 2 - 6, 20, "Nucleus Assignments");
-    atom_title->box(FL_NO_BOX);
-    atom_title->labelsize(12);
-    atom_title->labelcolor(ui(80, 90, 105));
-    atom_title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    atom_browser_ = new Fl_Hold_Browser(right_x + right_w / 2 + 6, right_y + spectrum_h + 30, right_w / 2 - 6, 88);
-    atom_browser_->callback(on_select_atom_cb, this);
-    atom_browser_->box(FL_DOWN_BOX);
-    atom_browser_->color(ui(255, 255, 255));
-    atom_browser_->selection_color(ui(224, 236, 248));
-    atom_browser_->textsize(11);
-
-    auto *workflow_title = new Fl_Box(right_x, right_y + spectrum_h + 126, right_w, 20, "Workflow Monitor");
-    workflow_title->box(FL_NO_BOX);
-    workflow_title->labelsize(12);
-    workflow_title->labelcolor(ui(80, 90, 105));
-    workflow_title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-
-    workflow_progress_widget_ = new WorkflowProgressWidget(right_x, right_y + spectrum_h + 148, right_w, 30, nullptr);
+    // ── TAB 1: Peaks ─────────────────────────────────────────────────────────
     {
-        std::vector<std::string> step_labels;
-        for (const auto &step : workflow_steps()) {
-            step_labels.push_back(step.label);
-        }
-        workflow_progress_widget_->set_steps(std::move(step_labels));
-        workflow_progress_widget_->set_progress_state(-1, -1, false, false, false, 0.0, "Workflow idle");
+        auto *peaks_tab = new Fl_Group(right_x, tab_inner_y, right_w, tab_inner_h, "Peaks");
+        peaks_tab->box(FL_FLAT_BOX);
+        peaks_tab->color(ui(250, 252, 255));
+
+        const int browser_h = tab_inner_h - 34;
+        const int half_w = right_w / 2 - 6;
+
+        auto *peak_title = new Fl_Box(right_x + 4, tab_inner_y + 4, half_w, 16, "Peak Groups");
+        peak_title->box(FL_NO_BOX);
+        peak_title->labelsize(11);
+        peak_title->labelcolor(ui(80, 90, 105));
+        peak_title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+
+        peak_browser_ = new Fl_Hold_Browser(right_x + 4, tab_inner_y + 22, half_w, browser_h);
+        peak_browser_->callback(on_select_peak_cb, this);
+        peak_browser_->box(FL_DOWN_BOX);
+        peak_browser_->color(ui(255, 255, 255));
+        peak_browser_->selection_color(ui(224, 236, 248));
+        peak_browser_->textsize(11);
+
+        auto *atom_title = new Fl_Box(right_x + half_w + 12, tab_inner_y + 4, half_w, 16, "Nucleus Assignments");
+        atom_title->box(FL_NO_BOX);
+        atom_title->labelsize(11);
+        atom_title->labelcolor(ui(80, 90, 105));
+        atom_title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+
+        atom_browser_ = new Fl_Hold_Browser(right_x + half_w + 12, tab_inner_y + 22, half_w, browser_h);
+        atom_browser_->callback(on_select_atom_cb, this);
+        atom_browser_->box(FL_DOWN_BOX);
+        atom_browser_->color(ui(255, 255, 255));
+        atom_browser_->selection_color(ui(224, 236, 248));
+        atom_browser_->textsize(11);
+
+        // Overlay row at bottom of Peaks tab
+        const int overlay_y = tab_inner_y + tab_inner_h - 28;
+        const int avail_w = right_w - 8;
+        const int clear_w = 76;
+        const int drop_w = (avail_w - clear_w - 14) / 2;
+
+        experimental_choice_ = new Fl_Choice(right_x + 4, overlay_y, drop_w, 22);
+        experimental_choice_->box(FL_DOWN_BOX);
+        experimental_choice_->color(ui(255, 255, 255));
+        experimental_choice_->labelsize(11);
+        experimental_choice_->add("Exp: none");
+        experimental_choice_->value(0);
+        experimental_choice_->callback(on_select_experimental_cb, this);
+
+        reference_choice_ = new Fl_Choice(right_x + 4 + drop_w + 7, overlay_y, drop_w, 22);
+        reference_choice_->box(FL_DOWN_BOX);
+        reference_choice_->color(ui(255, 255, 255));
+        reference_choice_->labelsize(11);
+        reference_choice_->add("Refs: none");
+        reference_choice_->value(0);
+        reference_choice_->callback(on_select_reference_cb, this);
+
+        clear_experimental_button_ = new Fl_Button(right_x + 4 + 2 * drop_w + 14, overlay_y, clear_w, 22, "Clear Exp");
+        clear_experimental_button_->callback(on_clear_experimental_cb, this);
+        clear_experimental_button_->box(FL_UP_BOX);
+        clear_experimental_button_->color(ui(226, 232, 241));
+        clear_experimental_button_->labelcolor(ui(88, 98, 112));
+        clear_experimental_button_->labelsize(11);
+
+        peaks_tab->end();
     }
 
-    workflow_info_bg_ = new Fl_Box(FL_DOWN_BOX, right_x, right_y + spectrum_h + 180, right_w, 52, "");
-    workflow_info_bg_->color(ui(255, 255, 255));
+    // ── TAB 2: Workflow ──────────────────────────────────────────────────────
+    {
+        auto *workflow_tab = new Fl_Group(right_x, tab_inner_y, right_w, tab_inner_h, "Workflow");
+        workflow_tab->box(FL_FLAT_BOX);
+        workflow_tab->color(ui(250, 252, 255));
 
-    workflow_info_line1_ = new Fl_Box(right_x + 8, right_y + spectrum_h + 182, right_w - 16, 16, "");
-    workflow_info_line1_->box(FL_NO_BOX);
-    workflow_info_line1_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    workflow_info_line1_->labelsize(12);
-    workflow_info_line1_->labelfont(FL_HELVETICA_BOLD);
-    workflow_info_line1_->labelcolor(ui(84, 95, 112));
+        auto *workflow_title = new Fl_Box(right_x + 4, tab_inner_y + 6, right_w - 8, 16, "Workflow Monitor");
+        workflow_title->box(FL_NO_BOX);
+        workflow_title->labelsize(11);
+        workflow_title->labelcolor(ui(80, 90, 105));
+        workflow_title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
-    workflow_info_line2_ = new Fl_Box(right_x + 8, right_y + spectrum_h + 198, right_w - 16, 16, "");
-    workflow_info_line2_->box(FL_NO_BOX);
-    workflow_info_line2_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    workflow_info_line2_->labelsize(12);
-    workflow_info_line2_->labelcolor(ui(98, 110, 128));
+        workflow_progress_widget_ = new WorkflowProgressWidget(right_x + 4, tab_inner_y + 26, right_w - 8, 30, nullptr);
+        {
+            std::vector<std::string> step_labels;
+            for (const auto &step : workflow_steps()) {
+                step_labels.push_back(step.label);
+            }
+            workflow_progress_widget_->set_steps(std::move(step_labels));
+            workflow_progress_widget_->set_progress_state(-1, -1, false, false, false, 0.0, "Workflow idle");
+        }
 
-    workflow_info_line3_ = new Fl_Box(right_x + 8, right_y + spectrum_h + 214, right_w - 16, 16, "");
-    workflow_info_line3_->box(FL_NO_BOX);
-    workflow_info_line3_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    workflow_info_line3_->labelsize(11);
-    workflow_info_line3_->labelcolor(ui(120, 132, 149));
+        workflow_info_bg_ = new Fl_Box(FL_DOWN_BOX, right_x + 4, tab_inner_y + 60, right_w - 8, 56, "");
+        workflow_info_bg_->color(ui(255, 255, 255));
+
+        workflow_info_line1_ = new Fl_Box(right_x + 12, tab_inner_y + 62, right_w - 24, 16, "");
+        workflow_info_line1_->box(FL_NO_BOX);
+        workflow_info_line1_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+        workflow_info_line1_->labelsize(12);
+        workflow_info_line1_->labelfont(FL_HELVETICA_BOLD);
+        workflow_info_line1_->labelcolor(ui(84, 95, 112));
+
+        workflow_info_line2_ = new Fl_Box(right_x + 12, tab_inner_y + 78, right_w - 24, 16, "");
+        workflow_info_line2_->box(FL_NO_BOX);
+        workflow_info_line2_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+        workflow_info_line2_->labelsize(12);
+        workflow_info_line2_->labelcolor(ui(98, 110, 128));
+
+        workflow_info_line3_ = new Fl_Box(right_x + 12, tab_inner_y + 94, right_w - 24, 16, "");
+        workflow_info_line3_->box(FL_NO_BOX);
+        workflow_info_line3_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+        workflow_info_line3_->labelsize(11);
+        workflow_info_line3_->labelcolor(ui(120, 132, 149));
+
+        workflow_tab->end();
+    }
+
+    // ── TAB 3: Examples ──────────────────────────────────────────────────────
+    {
+        auto *examples_tab = new Fl_Group(right_x, tab_inner_y, right_w, tab_inner_h, "Examples");
+        examples_tab->box(FL_FLAT_BOX);
+        examples_tab->color(ui(250, 252, 255));
+
+        const int list_w = right_w / 2 - 10;
+        const int detail_x = right_x + list_w + 14;
+        const int detail_w = right_w - list_w - 18;
+        const int open_h = 28;
+        const int detail_h = tab_inner_h - open_h - 18;
+
+        example_browser_ = new Fl_Hold_Browser(right_x + 4, tab_inner_y + 4, list_w, tab_inner_h - 8);
+        example_browser_->callback(on_select_example_cb, this);
+        example_browser_->box(FL_DOWN_BOX);
+        example_browser_->color(ui(255, 255, 255));
+        example_browser_->selection_color(ui(224, 236, 248));
+        example_browser_->textsize(11);
+
+        example_detail_box_ = new Fl_Box(FL_DOWN_BOX, detail_x, tab_inner_y + 4, detail_w, detail_h, "");
+        example_detail_box_->align(FL_ALIGN_LEFT | FL_ALIGN_TOP | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
+        example_detail_box_->color(ui(255, 255, 255));
+        example_detail_box_->labelsize(11);
+        example_detail_box_->labelcolor(ui(68, 80, 98));
+
+        open_example_button_ = new Fl_Button(detail_x, tab_inner_y + detail_h + 12, detail_w, open_h, "Open Example");
+        open_example_button_->callback(on_load_example_bundle_cb, this);
+        open_example_button_->box(FL_UP_BOX);
+        open_example_button_->color(ui(190, 220, 207));
+        open_example_button_->labelcolor(ui(55, 82, 69));
+        open_example_button_->labelfont(FL_HELVETICA_BOLD);
+        open_example_button_->labelsize(11);
+        open_example_button_->deactivate();
+
+        examples_tab->end();
+    }
+
+    bottom_tabs->end();
 
     end();
     refresh_example_choice();
@@ -2010,10 +2025,6 @@ void AppWindow::on_export_spectrum_cb(Fl_Widget *, void *userdata) {
 
 void AppWindow::on_select_example_cb(Fl_Widget *, void *userdata) {
     static_cast<AppWindow *>(userdata)->on_select_example();
-}
-
-void AppWindow::on_load_example_calc_cb(Fl_Widget *, void *userdata) {
-    static_cast<AppWindow *>(userdata)->on_load_example(false);
 }
 
 void AppWindow::on_load_example_bundle_cb(Fl_Widget *, void *userdata) {
@@ -2752,20 +2763,27 @@ void AppWindow::on_select_experimental() {
 }
 
 void AppWindow::on_select_example() {
-    if (example_choice_ == nullptr) {
+    if (example_browser_ == nullptr) {
         return;
     }
-    const int selected = example_choice_->value();
-    if (selected <= 0 || selected >= static_cast<int>(example_choice_case_indices_.size())) {
+    const int selected = example_browser_->value();
+    if (selected <= 0 || selected > static_cast<int>(example_bundle_names_.size())) {
         return;
     }
-    const int bundle_idx = example_choice_case_indices_[static_cast<std::size_t>(selected)];
+    const int bundle_idx = selected - 1;
     if (bundle_idx < 0 || bundle_idx >= static_cast<int>(example_bundle_row_indices_.size())) {
         return;
     }
 
     std::set<std::string> products;
     std::string workflow;
+    std::string difficulty;
+    std::string smiles;
+    bool has_experimental = false;
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
     for (int row_idx : example_bundle_row_indices_[static_cast<std::size_t>(bundle_idx)]) {
         if (row_idx < 0 || row_idx >= static_cast<int>(example_case_rows_.size())) {
             continue;
@@ -2778,41 +2796,76 @@ void AppWindow::on_select_example() {
         if (workflow.empty()) {
             workflow = trim_copy(fields[2]);
         }
-    }
-
-    std::ostringstream products_text;
-    bool first = true;
-    for (const auto &p : products) {
-        if (!first) {
-            products_text << ", ";
+        if (difficulty.empty()) {
+            difficulty = trim_copy(fields[0]);
         }
-        products_text << p;
-        first = false;
+        if (smiles.empty()) {
+            smiles = trim_copy(fields[5]);
+        }
+        const std::string exp_file = resolve_example_asset_path(fields[7]);
+        ec.clear();
+        if (!exp_file.empty() && fs::exists(exp_file, ec) && !ec) {
+            has_experimental = true;
+        }
     }
 
     const std::string bundle_name = example_bundle_names_[static_cast<std::size_t>(bundle_idx)];
-    std::ostringstream status;
-    status << "Example selected: " << bundle_name;
-    if (!workflow.empty()) {
-        status << " | " << uppercase_copy(workflow);
+
+    // Populate the detail box.
+    if (example_detail_box_ != nullptr) {
+        std::ostringstream detail;
+        detail << bundle_name << "\n";
+        if (!difficulty.empty()) {
+            detail << "Level: " << difficulty << "\n";
+        }
+        if (!products.empty()) {
+            detail << "Nuclei: ";
+            bool first = true;
+            for (const auto &p : products) {
+                if (!first) detail << "  ";
+                detail << p;
+                first = false;
+            }
+            detail << "\n";
+        }
+        if (!smiles.empty() && smiles.size() < 40) {
+            detail << "SMILES: " << smiles << "\n";
+        }
+        detail << (has_experimental ? "Experimental: available" : "Experimental: not found");
+        example_detail_box_->copy_label(detail.str().c_str());
+        example_detail_box_->redraw();
     }
+
+    if (open_example_button_ != nullptr) {
+        open_example_button_->activate();
+    }
+
+    std::ostringstream status;
+    status << "Example: " << bundle_name;
     if (!products.empty()) {
-        status << " | products: " << products_text.str();
+        status << " (";
+        bool first = true;
+        for (const auto &p : products) {
+            if (!first) status << " ";
+            status << p;
+            first = false;
+        }
+        status << ")";
     }
     status_box_->copy_label(status.str().c_str());
 }
 
 void AppWindow::on_load_example(bool with_experimental) {
-    if (example_choice_ == nullptr) {
-        status_box_->label("No example menu available");
+    if (example_browser_ == nullptr) {
+        status_box_->label("No example browser available");
         return;
     }
-    const int selected = example_choice_->value();
-    if (selected <= 0 || selected >= static_cast<int>(example_choice_case_indices_.size())) {
+    const int selected = example_browser_->value();
+    if (selected <= 0 || selected > static_cast<int>(example_bundle_names_.size())) {
         status_box_->label("Select an example first");
         return;
     }
-    const int bundle_idx = example_choice_case_indices_[static_cast<std::size_t>(selected)];
+    const int bundle_idx = selected - 1;
     if (bundle_idx < 0 || bundle_idx >= static_cast<int>(example_bundle_row_indices_.size())) {
         status_box_->label("Selected example is unavailable");
         return;
@@ -3590,6 +3643,7 @@ void AppWindow::on_compare_structure_atom_picked(int atom_index, const std::vect
     if (!matched_primary_groups.empty()) {
         spectrum_widget_->set_selected_groups(matched_primary_groups);
     }
+    spectrum_widget_->set_selected_comparison_groups(matched_compare_groups);
 
     std::ostringstream status;
     status << "Selected compare atom " << atom_index;
@@ -3903,18 +3957,22 @@ void AppWindow::apply_reference_peaks(const std::string &solvent, const std::str
 }
 
 void AppWindow::refresh_example_choice() {
-    if (example_choice_ == nullptr) {
+    if (example_browser_ == nullptr) {
         return;
     }
 
-    example_choice_->clear();
+    example_browser_->clear();
     example_case_rows_.clear();
     example_bundle_names_.clear();
     example_bundle_row_indices_.clear();
     example_choice_case_indices_.clear();
 
-    example_choice_->add("Examples: choose molecule");
-    example_choice_case_indices_.push_back(-1);
+    if (example_detail_box_ != nullptr) {
+        example_detail_box_->copy_label("");
+    }
+    if (open_example_button_ != nullptr) {
+        open_example_button_->deactivate();
+    }
 
     const std::string cases_csv = find_examples_case_csv();
     const auto cases = load_example_cases(cases_csv);
@@ -3961,36 +4019,74 @@ void AppWindow::refresh_example_choice() {
         return lowercase_copy(a.display_name) < lowercase_copy(b.display_name);
     });
 
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
     for (const auto &bundle : bundles) {
+        // Only list bundles where every computed spectrum file exists on disk.
+        bool all_exist = true;
+        for (int row_idx : bundle.row_indices) {
+            if (row_idx < 0 || row_idx >= static_cast<int>(example_case_rows_.size())) {
+                all_exist = false;
+                break;
+            }
+            const auto fields = parse_csv_line(example_case_rows_[static_cast<std::size_t>(row_idx)]);
+            if (fields.size() < 7) {
+                all_exist = false;
+                break;
+            }
+            const std::string computed_ref = resolve_example_asset_path(fields[6]);
+            ec.clear();
+            if (computed_ref.empty() || !fs::exists(computed_ref, ec) || ec) {
+                all_exist = false;
+                break;
+            }
+        }
+        if (!all_exist) {
+            continue;
+        }
+
+        // Build nucleus badge string (e.g. "[1H 13C]").
+        std::set<std::string> nuclei;
+        std::string difficulty;
+        for (int row_idx : bundle.row_indices) {
+            const auto fields = parse_csv_line(example_case_rows_[static_cast<std::size_t>(row_idx)]);
+            if (fields.size() >= 4) {
+                const std::string product = normalize_nucleus_label(fields[3]);
+                if (!product.empty()) {
+                    nuclei.insert(product);
+                }
+            }
+            if (difficulty.empty() && !fields.empty()) {
+                difficulty = trim_copy(fields[0]);
+            }
+        }
+
+        std::string badge = " [";
+        bool first_nuc = true;
+        for (const auto &nuc : nuclei) {
+            if (!first_nuc) badge += " ";
+            badge += nuc;
+            first_nuc = false;
+        }
+        badge += "]";
+
+        std::string entry = bundle.display_name + badge;
+        if (!difficulty.empty()) {
+            entry += "  (" + difficulty + ")";
+        }
+
         example_bundle_names_.push_back(bundle.display_name);
         example_bundle_row_indices_.push_back(bundle.row_indices);
-        const int bundle_index = static_cast<int>(example_bundle_names_.size()) - 1;
-        example_choice_case_indices_.push_back(bundle_index);
-        example_choice_->add(bundle.display_name.c_str());
+        example_browser_->add(entry.c_str());
     }
-
-    example_choice_->value(0);
 
     if (example_bundle_names_.empty()) {
         if (!cases_csv.empty()) {
-            status_box_->copy_label(("No examples found in " + cases_csv).c_str());
+            status_box_->copy_label(("No complete examples found in " + cases_csv).c_str());
         } else {
             status_box_->label("No examples file found (tests/spectra_comparison_cases.csv)");
         }
-        if (load_example_calc_button_ != nullptr) {
-            load_example_calc_button_->deactivate();
-        }
-        if (load_example_bundle_button_ != nullptr) {
-            load_example_bundle_button_->deactivate();
-        }
-        return;
-    }
-
-    if (load_example_calc_button_ != nullptr) {
-        load_example_calc_button_->activate();
-    }
-    if (load_example_bundle_button_ != nullptr) {
-        load_example_bundle_button_->activate();
     }
 }
 

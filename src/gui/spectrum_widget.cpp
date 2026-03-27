@@ -212,6 +212,16 @@ void SpectrumWidget::set_selected_groups(const std::vector<int> &group_ids) {
     redraw();
 }
 
+void SpectrumWidget::set_selected_comparison_groups(const std::vector<int> &group_ids) {
+    selected_comparison_group_ids_.clear();
+    for (int group_id : group_ids) {
+        if (group_id > 0) {
+            selected_comparison_group_ids_.insert(group_id);
+        }
+    }
+    redraw();
+}
+
 void SpectrumWidget::set_reference_peaks(std::vector<ReferencePeak> peaks) {
     reference_peaks_ = std::move(peaks);
     if (highlighted_reference_index_ >= static_cast<int>(reference_peaks_.size())) {
@@ -260,6 +270,7 @@ void SpectrumWidget::clear_comparison_points() {
     comparison_peak_markers_.clear();
     manual_shift_pairs_.clear();
     armed_primary_group_id_ = 0;
+    selected_comparison_group_ids_.clear();
     redraw();
 }
 
@@ -688,11 +699,16 @@ void SpectrumWidget::draw() {
             if (px < plot_x0 || px > plot_x0 + plot_w) {
                 continue;
             }
-            fl_color(pal.compare_marker);
-            fl_line_style(FL_DASH, 1);
+            const bool sel_cmp = selected_comparison_group_ids_.count(marker.group_id) > 0;
+            fl_color(sel_cmp ? pal.compare_marker_selected : pal.compare_marker);
+            fl_line_style(sel_cmp ? FL_SOLID : FL_DASH, sel_cmp ? 2 : 1);
             fl_line(px, plot_y0 + 6, px, zero_line_y - 8);
             fl_color(pal.compare_marker_selected);
-            fl_pie(px - 3, zero_line_y - 13, 6, 6, 0, 360);
+            if (sel_cmp) {
+                fl_pie(px - 5, zero_line_y - 15, 10, 10, 0, 360);
+            } else {
+                fl_pie(px - 3, zero_line_y - 13, 6, 6, 0, 360);
+            }
         }
         fl_line_style(FL_SOLID, 0);
     }

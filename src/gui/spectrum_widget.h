@@ -47,6 +47,7 @@ class SpectrumWidget : public Fl_Widget {
     void set_peak_markers(std::vector<PeakMarker> markers);
     void set_selected_group(int group_id);
     void set_selected_groups(const std::vector<int> &group_ids);
+    void set_selected_comparison_groups(const std::vector<int> &group_ids);
     void set_reference_peaks(std::vector<ReferencePeak> peaks);
     void set_highlighted_reference(int ref_index);
     void set_nucleus_label(const std::string &label);
@@ -82,6 +83,7 @@ class SpectrumWidget : public Fl_Widget {
     int highlighted_reference_index_ = -1;
     std::string nucleus_label_ = "1H NMR Spectrum";
     std::unordered_set<int> selected_group_ids_;
+    std::unordered_set<int> selected_comparison_group_ids_;
     std::function<void(int)> on_peak_selected_;
     std::function<void(int, int)> on_manual_shift_pair_;
     std::string line_shape_ = "lorentzian";
