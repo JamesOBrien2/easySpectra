@@ -17,10 +17,12 @@
 #include <FL/Fl_Input.H>
 #include <FL/Fl_Tabs.H>
 
+#include <array>
 #include <atomic>
 #include <future>
 #include <map>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -109,6 +111,11 @@ class AppWindow : public Fl_Double_Window {
     void apply_comparison_visuals(const QueuedJob &active_job);
     void update_structure_compare_layout(bool compare_mode);
     void highlight_comparison_for_primary_group(int primary_group_id);
+    void run_comparison_analysis();
+    void clear_comparison_analysis();
+    void cycle_input_mode();
+    void launch_pubchem_lookup(const std::string &name, bool then_queue);
+    void poll_pubchem_lookup();
 
     void run_worker_loop();
     void refresh_queue_browser();
@@ -124,8 +131,7 @@ class AppWindow : public Fl_Double_Window {
     void maybe_apply_example_overlay_for_active_selection();
 
     ColoredInputEditor *input_box_ = nullptr;
-    Fl_Box *compare_input_label_ = nullptr;
-    ColoredInputEditor *compare_input_box_ = nullptr;
+    Fl_Button *input_mode_btn_ = nullptr;
     Fl_Input *job_name_input_ = nullptr;
     Fl_Choice *workflow_choice_ = nullptr;
     Fl_Choice *solvent_choice_ = nullptr;
@@ -158,6 +164,10 @@ class AppWindow : public Fl_Double_Window {
     Fl_Button *export_spectrum_button_ = nullptr;
     Fl_Box *status_box_ = nullptr;
     SpectrumWidget *spectrum_widget_ = nullptr;
+    Fl_Box *comparison_placeholder_ = nullptr;
+    Fl_Box *comparison_header_box_ = nullptr;
+    Fl_Box *comparison_overall_box_ = nullptr;
+    std::array<Fl_Box *, 4> comparison_nucleus_rows_{};
 
     Pipeline pipeline_;
     std::vector<QueuedJob> jobs_;
@@ -171,7 +181,13 @@ class AppWindow : public Fl_Double_Window {
         SelectedOnly
     };
 
+    enum class InputMode { Smiles, PubchemName, Xyz };
+
     RunScope run_scope_ = RunScope::PendingQueue;
+    InputMode input_mode_ = InputMode::Smiles;
+    std::future<std::string> pubchem_future_;
+    bool pubchem_future_active_ = false;
+    bool pubchem_then_queue_ = false;
     std::size_t selected_run_index_ = static_cast<std::size_t>(-1);
     int active_job_index_ = -1;
     int run_total_ = 0;
