@@ -41,6 +41,8 @@ struct QueuedJob {
     std::string spectra_manifest_csv;
     std::string reaction_summary_json;
     std::string structure_product_svg;
+    std::string structure_atoms_product_csv;
+    std::string structure_bonds_product_csv;
     std::string message;
     std::string progress_stage;
     std::string progress_message;

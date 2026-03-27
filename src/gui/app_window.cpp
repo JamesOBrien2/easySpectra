@@ -3628,7 +3628,44 @@ void AppWindow::apply_nucleus_visuals(const QueuedJob &job, const std::string &n
         primary_group_to_ppm_[row.group_id] = row.center_ppm;
     }
     spectrum_widget_->set_peak_markers(std::move(markers));
-    apply_comparison_visuals(job);
+
+    // For compare workflow jobs: auto-overlay the product spectrum when a
+    // "(Reactant)" label is active, so both traces are shown side-by-side.
+    if (job.config.workflow_kind == WorkflowKind::Compare && comparison_job_index_ < 0) {
+        static const std::string kReactantSuffix = " (Reactant)";
+        const bool is_reactant_label = (active_nucleus_.size() > kReactantSuffix.size()
+            && active_nucleus_.substr(active_nucleus_.size() - kReactantSuffix.size()) == kReactantSuffix);
+        if (is_reactant_label) {
+            const std::string base_nucleus = active_nucleus_.substr(0, active_nucleus_.size() - kReactantSuffix.size());
+            const std::string product_label = base_nucleus + " (Product)";
+            auto product_it = active_spectral_products_.find(product_label);
+            if (product_it != active_spectral_products_.end() && !product_it->second.spectrum_csv.empty()) {
+                const auto product_points = load_spectrum_csv(product_it->second.spectrum_csv);
+                spectrum_widget_->set_comparison_points(product_points);
+                const auto product_peak_rows = read_peak_rows(product_it->second.peaks_csv);
+                comparison_peak_rows_.clear();
+                comparison_group_to_ppm_.clear();
+                comparison_group_to_atoms_ = read_assignments(product_it->second.assignments_csv);
+                std::vector<ComparisonPeakMarker> cmp_markers;
+                for (const auto &row : product_peak_rows) {
+                    ComparisonPeakMarker m;
+                    m.group_id = row.group_id;
+                    m.center_ppm = row.center_ppm;
+                    m.label = row.multiplicity;
+                    cmp_markers.push_back(m);
+                    comparison_peak_rows_.push_back(m);
+                    comparison_group_to_ppm_[row.group_id] = row.center_ppm;
+                }
+                spectrum_widget_->set_comparison_peak_markers(std::move(cmp_markers));
+            } else {
+                spectrum_widget_->clear_comparison_points();
+            }
+        } else {
+            spectrum_widget_->clear_comparison_points();
+        }
+    } else {
+        apply_comparison_visuals(job);
+    }
 
     std::vector<int> atoms;
     for (const auto &entry : group_to_atoms_) {
@@ -3706,6 +3743,26 @@ void AppWindow::load_selected_job_visuals() {
     auto structure_bonds = read_structure_bonds(job.structure_bonds_csv);
     if (structure_widget_ != nullptr) {
         structure_widget_->set_structure(std::move(structure_atoms), std::move(structure_bonds));
+    }
+
+    if (job.config.workflow_kind == WorkflowKind::Compare && !job.structure_atoms_product_csv.empty()) {
+        const auto product_atoms = read_structure_atoms(job.structure_atoms_product_csv);
+        const auto product_bonds = read_structure_bonds(job.structure_bonds_product_csv);
+        if (compare_structure_widget_ != nullptr) {
+            compare_structure_widget_->set_structure(product_atoms, product_bonds);
+        }
+        if (structure_current_label_ != nullptr) {
+            structure_current_label_->copy_label("A: Reactant");
+        }
+        if (structure_compare_label_ != nullptr) {
+            structure_compare_label_->copy_label("B: Product");
+        }
+        update_structure_compare_layout(true);
+    } else if (comparison_job_index_ < 0) {
+        if (compare_structure_widget_ != nullptr) {
+            compare_structure_widget_->set_structure({}, {});
+        }
+        update_structure_compare_layout(false);
     }
 
     active_spectral_products_ = spectral_products_for_job(job);
@@ -4217,6 +4274,8 @@ void AppWindow::run_worker_loop() {
                 job.structure_xyz = result.structure_xyz;
                 job.reaction_summary_json = result.reaction_summary_json;
                 job.structure_product_svg = result.structure_product_svg;
+                job.structure_atoms_product_csv = result.structure_atoms_product_csv;
+                job.structure_bonds_product_csv = result.structure_bonds_product_csv;
                 if (result.status == "ok") {
                     job.message = "done";
                     job.progress_stage = "done";
