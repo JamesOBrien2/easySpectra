@@ -20,6 +20,7 @@ from easynmr_backend import (
     ConformerResult,
     GroupPrediction,
     MULTIPLICITY_LABELS,
+    COMPARE_TOLERANCE_PPM,
     boltzmann_weights,
     estimate_c_shift,
     estimate_f_shift,
@@ -35,6 +36,13 @@ from easynmr_backend import (
     simulate_spectrum,
     splitting_pattern,
     _chirality_sign,
+    _cosine_similarity,
+    _match_peaks_greedy,
+    _reaction_indicator,
+    _overall_reaction_indicator,
+    _reaction_description,
+    _resample_onto_axis,
+    compute_spectral_comparison,
 )
 
 from rdkit import Chem
@@ -647,3 +655,257 @@ class TestMultiplicityLabels:
         assert 6 not in MULTIPLICITY_LABELS, (
             "Sextet label added — update this test and the feature proposal tracker"
         )
+
+
+# ---------------------------------------------------------------------------
+# Reaction comparison functions
+# ---------------------------------------------------------------------------
+
+def _make_group(shift: float, integral: float = 1.0, mult: str = "s") -> GroupPrediction:
+    """Helper: GroupPrediction with the fields used by comparison functions."""
+    g = GroupPrediction.__new__(GroupPrediction)
+    g.shift_ppm = shift
+    g.integral = integral
+    g.multiplicity = mult
+    g.j_couplings = []
+    g.atom_indices = []
+    g.group_id = 0
+    return g
+
+
+def _flat_spectrum(ppm_min: float, ppm_max: float, n: int = 200) -> list:
+    """Uniform-intensity spectrum over a ppm range."""
+    import numpy as _np
+    axis = _np.linspace(ppm_max, ppm_min, n)
+    return [(float(p), 1.0) for p in axis]
+
+
+def _peaked_spectrum(center: float, width: float = 0.5, n: int = 400) -> list:
+    """Single Lorentzian peak centred at `center`."""
+    import numpy as _np
+    axis = _np.linspace(center + 5, center - 5, n)
+    intensity = 1.0 / (1.0 + ((axis - center) / (width / 2)) ** 2)
+    return list(zip(axis.tolist(), intensity.tolist()))
+
+
+class TestResampleOntoAxis:
+    def test_empty_data_returns_zeros(self):
+        import numpy as np
+        axis = np.linspace(10, 0, 50)
+        result = _resample_onto_axis([], axis)
+        assert result.shape == axis.shape
+        assert np.all(result == 0.0)
+
+    def test_constant_spectrum_interpolates_to_constant(self):
+        import numpy as np
+        data = [(float(p), 1.0) for p in np.linspace(10, 0, 100)]
+        axis = np.linspace(9, 1, 50)
+        result = _resample_onto_axis(data, axis)
+        assert np.allclose(result, 1.0, atol=1e-6)
+
+    def test_high_to_low_input_flipped_correctly(self):
+        import numpy as np
+        # Spectrum stored high→low (normal NMR convention)
+        data = [(10.0, 0.0), (5.0, 1.0), (0.0, 0.0)]
+        axis = np.array([5.0])
+        result = _resample_onto_axis(data, axis)
+        assert abs(result[0] - 1.0) < 1e-6
+
+
+class TestCosineSimilarity:
+    def test_identical_vectors_give_one(self):
+        import numpy as np
+        v = np.array([1.0, 2.0, 3.0])
+        assert abs(_cosine_similarity(v, v) - 1.0) < 1e-9
+
+    def test_orthogonal_vectors_give_zero(self):
+        import numpy as np
+        a = np.array([1.0, 0.0])
+        b = np.array([0.0, 1.0])
+        assert abs(_cosine_similarity(a, b)) < 1e-9
+
+    def test_zero_vector_returns_zero(self):
+        import numpy as np
+        a = np.zeros(5)
+        b = np.ones(5)
+        assert _cosine_similarity(a, b) == 0.0
+
+    def test_result_clamped_to_one(self):
+        import numpy as np
+        v = np.array([1.0, 1.0])
+        assert _cosine_similarity(v, v) <= 1.0
+
+    def test_antiparallel_clamped_to_zero(self):
+        import numpy as np
+        a = np.array([1.0, 2.0])
+        b = -a
+        assert _cosine_similarity(a, b) == 0.0
+
+
+class TestMatchPeaksGreedy:
+    def test_identical_peaks_all_retained(self):
+        groups = [_make_group(1.0), _make_group(3.5), _make_group(7.2)]
+        matched, lost, new = _match_peaks_greedy(groups, groups, 0.3)
+        assert len(matched) == 3
+        assert len(lost) == 0
+        assert len(new) == 0
+        assert all(m["status"] == "retained" for m in matched)
+
+    def test_shifted_peak_flagged_as_shifted(self):
+        r = [_make_group(3.0)]
+        p = [_make_group(3.25)]  # within 0.3 ppm but > 30% of tolerance
+        matched, lost, new = _match_peaks_greedy(r, p, 0.3)
+        assert len(matched) == 1
+        assert matched[0]["status"] == "shifted"
+
+    def test_peak_outside_tolerance_is_lost_and_new(self):
+        r = [_make_group(1.0)]
+        p = [_make_group(5.0)]
+        matched, lost, new = _match_peaks_greedy(r, p, 0.3)
+        assert len(matched) == 0
+        assert len(lost) == 1
+        assert len(new) == 1
+
+    def test_each_peak_matched_at_most_once(self):
+        r = [_make_group(3.0), _make_group(3.05)]
+        p = [_make_group(3.0)]
+        matched, lost, new = _match_peaks_greedy(r, p, 0.3)
+        assert len(matched) == 1
+        assert len(lost) == 1
+
+    def test_empty_reactant(self):
+        p = [_make_group(3.0)]
+        matched, lost, new = _match_peaks_greedy([], p, 0.3)
+        assert matched == [] and lost == [] and len(new) == 1
+
+    def test_empty_product(self):
+        r = [_make_group(3.0)]
+        matched, lost, new = _match_peaks_greedy(r, [], 0.3)
+        assert matched == [] and len(lost) == 1 and new == []
+
+    def test_delta_ppm_sign_convention(self):
+        # reactant at 3.0, product at 3.2 → delta = 3.0 - 3.2 = -0.2
+        r = [_make_group(3.0)]
+        p = [_make_group(3.2)]
+        matched, _, _ = _match_peaks_greedy(r, p, 0.3)
+        assert len(matched) == 1
+        assert abs(matched[0]["delta_ppm"] - (-0.2)) < 1e-3
+
+
+class TestReactionIndicator:
+    def test_identical_spectra_no_reaction(self):
+        assert _reaction_indicator(0.95, 0, 0, 0) == "no_reaction"
+
+    def test_low_similarity_reaction_likely(self):
+        assert _reaction_indicator(0.40, 0, 0, 0) == "reaction_likely"
+
+    def test_many_lost_peaks_reaction_likely(self):
+        assert _reaction_indicator(0.85, 2, 0, 0) == "reaction_likely"
+
+    def test_many_new_peaks_reaction_likely(self):
+        assert _reaction_indicator(0.85, 0, 2, 0) == "reaction_likely"
+
+    def test_moderate_shift_inconclusive(self):
+        assert _reaction_indicator(0.75, 0, 0, 1) == "inconclusive"
+
+    def test_similarity_boundary_no_reaction(self):
+        # Exactly at threshold: ≥0.92 with zero lost/new/shifted
+        assert _reaction_indicator(0.92, 0, 0, 0) == "no_reaction"
+
+    def test_similarity_just_below_no_reaction_boundary(self):
+        assert _reaction_indicator(0.91, 0, 0, 0) != "no_reaction"
+
+
+class TestOverallReactionIndicator:
+    def test_empty_returns_inconclusive(self):
+        assert _overall_reaction_indicator({}) == "inconclusive"
+
+    def test_single_reaction_likely(self):
+        results = {"1H": {"reaction_indicator": "reaction_likely"}}
+        assert _overall_reaction_indicator(results) == "reaction_likely"
+
+    def test_all_no_reaction(self):
+        results = {
+            "1H": {"reaction_indicator": "no_reaction"},
+            "13C": {"reaction_indicator": "no_reaction"},
+        }
+        assert _overall_reaction_indicator(results) == "no_reaction"
+
+    def test_mixed_inconclusive_and_no_reaction(self):
+        results = {
+            "1H": {"reaction_indicator": "no_reaction"},
+            "13C": {"reaction_indicator": "inconclusive"},
+        }
+        assert _overall_reaction_indicator(results) == "inconclusive"
+
+    def test_any_reaction_likely_dominates(self):
+        results = {
+            "1H": {"reaction_indicator": "no_reaction"},
+            "13C": {"reaction_indicator": "reaction_likely"},
+        }
+        assert _overall_reaction_indicator(results) == "reaction_likely"
+
+
+class TestReactionDescription:
+    def test_all_indicators_have_descriptions(self):
+        for indicator in ("no_reaction", "reaction_likely", "inconclusive"):
+            desc = _reaction_description(indicator)
+            assert isinstance(desc, str) and len(desc) > 10
+
+    def test_unknown_indicator_returns_string(self):
+        desc = _reaction_description("made_up_indicator")
+        assert isinstance(desc, str)
+
+    def test_no_reaction_mentions_similar(self):
+        assert "similar" in _reaction_description("no_reaction").lower()
+
+    def test_reaction_likely_mentions_differences(self):
+        assert "differences" in _reaction_description("reaction_likely").lower()
+
+
+class TestCompareTolerance:
+    def test_all_nmr_nuclei_have_tolerances(self):
+        for nucleus in ("1h", "13c", "19f", "31p"):
+            assert nucleus in COMPARE_TOLERANCE_PPM
+            assert COMPARE_TOLERANCE_PPM[nucleus] > 0.0
+
+    def test_proton_tightest_tolerance(self):
+        assert COMPARE_TOLERANCE_PPM["1h"] <= COMPARE_TOLERANCE_PPM["13c"]
+        assert COMPARE_TOLERANCE_PPM["1h"] <= COMPARE_TOLERANCE_PPM["19f"]
+
+
+class TestComputeSpectralComparison:
+    def test_identical_molecules_high_similarity(self):
+        # Same spectrum for reactant and product → very high similarity, no_reaction
+        spec = _peaked_spectrum(3.5)
+        groups = [_make_group(3.5)]
+        result = compute_spectral_comparison(groups, groups, spec, spec, "1h")
+        assert result["spectral_similarity_pct"] >= 90.0
+        assert result["reaction_indicator"] == "no_reaction"
+        assert result["lost_peaks"] == 0
+        assert result["new_peaks"] == 0
+
+    def test_completely_different_spectra_reaction_likely(self):
+        spec_r = _peaked_spectrum(1.0)
+        spec_p = _peaked_spectrum(8.0)
+        groups_r = [_make_group(1.0)]
+        groups_p = [_make_group(8.0)]
+        result = compute_spectral_comparison(groups_r, groups_p, spec_r, spec_p, "1h")
+        assert result["reaction_indicator"] == "reaction_likely"
+        assert result["lost_peaks"] >= 1
+        assert result["new_peaks"] >= 1
+
+    def test_result_keys_present(self):
+        spec = _peaked_spectrum(2.0)
+        groups = [_make_group(2.0)]
+        result = compute_spectral_comparison(groups, groups, spec, spec, "1h")
+        for key in ("spectral_similarity_pct", "retained_peaks", "shifted_peaks",
+                    "lost_peaks", "new_peaks", "reaction_indicator",
+                    "matched_peaks", "lost_peak_details", "new_peak_details"):
+            assert key in result, f"Missing key: {key}"
+
+    def test_similarity_in_valid_range(self):
+        spec = _peaked_spectrum(4.0)
+        groups = [_make_group(4.0)]
+        result = compute_spectral_comparison(groups, groups, spec, spec, "13c")
+        assert 0.0 <= result["spectral_similarity_pct"] <= 100.0
