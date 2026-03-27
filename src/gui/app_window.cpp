@@ -653,63 +653,94 @@ const char *kRoleGreenDotXpm[] = {
 Fl_Pixmap kRoleBlueDot(kRoleBlueDotXpm);
 Fl_Pixmap kRoleGreenDot(kRoleGreenDotXpm);
 
+const char *kStatusPendingDotXpm[] = {
+    "9 9 2 1",
+    "  c None",
+    ". c #A0A8B8",
+    "         ",
+    "         ",
+    "   ...   ",
+    "  .....  ",
+    "  .....  ",
+    "  .....  ",
+    "   ...   ",
+    "         ",
+    "         ",
+};
+
+const char *kStatusRunningDotXpm[] = {
+    "9 9 2 1",
+    "  c None",
+    ". c #E08A30",
+    "         ",
+    "         ",
+    "   ...   ",
+    "  .....  ",
+    "  .....  ",
+    "  .....  ",
+    "   ...   ",
+    "         ",
+    "         ",
+};
+
+const char *kStatusDoneDotXpm[] = {
+    "9 9 2 1",
+    "  c None",
+    ". c #5AA07A",
+    "         ",
+    "         ",
+    "   ...   ",
+    "  .....  ",
+    "  .....  ",
+    "  .....  ",
+    "   ...   ",
+    "         ",
+    "         ",
+};
+
+const char *kStatusFailedDotXpm[] = {
+    "9 9 2 1",
+    "  c None",
+    ". c #C85050",
+    "         ",
+    "         ",
+    "   ...   ",
+    "  .....  ",
+    "  .....  ",
+    "  .....  ",
+    "   ...   ",
+    "         ",
+    "         ",
+};
+
+Fl_Pixmap kStatusPendingDot(kStatusPendingDotXpm);
+Fl_Pixmap kStatusRunningDot(kStatusRunningDotXpm);
+Fl_Pixmap kStatusDoneDot(kStatusDoneDotXpm);
+Fl_Pixmap kStatusFailedDot(kStatusFailedDotXpm);
+
 std::string format_label_for(
     const QueuedJob &job,
-    bool selected,
+    bool /*selected*/,
     bool is_primary_role,
     bool is_compare_role) {
-    std::string state_icon = "WAIT";
-    if (job.status == "running") {
-        state_icon = "RUN";
-    } else if (job.status == "done") {
-        state_icon = "OK";
-    } else if (job.status == "failed") {
-        state_icon = "FAIL";
-    }
-
-    std::string role = ".";
+    std::string role = "\xC2\xB7"; // UTF-8 middle dot
     if (is_primary_role) {
         role = "A";
     } else if (is_compare_role) {
         role = "B";
     }
 
-    std::string run_or_select = " ";
-    if (selected) {
-        run_or_select = ">";
-    } else if (job.status == "running") {
-        run_or_select = "*";
+    std::string mode;
+    switch (job.config.workflow_kind) {
+    case WorkflowKind::All:     mode = "ALL";  break;
+    case WorkflowKind::Nmr:     mode = "NMR";  break;
+    case WorkflowKind::Cd:      mode = "CD";   break;
+    case WorkflowKind::Compare: mode = "CMP";  break;
+    default:                    mode = "?";    break;
     }
 
-    std::string mode = workflow_display_name(job.config.workflow_kind);
-    if (job.config.workflow_kind == WorkflowKind::Nmr) {
-        mode += ":" + normalize_nucleus_label(job.config.nucleus);
-    }
-
-    std::string tail;
-    if (job.status == "running" && !job.message.empty()) {
-        tail = truncate_text(job.message, 22);
-    } else if (job.status == "failed" && !job.message.empty()) {
-        tail = truncate_text(job.message, 22);
-    } else {
-        tail = to_string(job.config.input_format);
-    }
-
-    std::ostringstream oss;
-    oss << run_or_select
-        << "\t"
-        << role
-        << "\t"
-        << state_icon
-        << "\t"
-        << truncate_text(job.config.job_name, 20)
-        << "\t"
-        << job.id
-        << "\t"
-        << mode
-        << "\t"
-        << tail;
-    return oss.str();
+    const std::string name = job.config.job_name.empty() ? "untitled" : job.config.job_name;
+    return "\t" + role + "  " + truncate_text(name, 18) + "  [" + mode + "]";
 }
 
 std::vector<ExampleCase> load_example_cases(const std::string &path) {
@@ -1450,6 +1481,7 @@ AppWindow::AppWindow(int w, int h, const char *title)
     color(ui(237, 242, 248));
     begin();
 
+    // ── Top bar ──────────────────────────────────────────────────────────────
     auto *top_bar = new Fl_Box(FL_FLAT_BOX, 0, 0, w, 36, "");
     top_bar->color(ui(49, 58, 72));
     auto *top_accent = new Fl_Box(FL_FLAT_BOX, 0, 34, w, 2, "");
@@ -1461,77 +1493,120 @@ AppWindow::AppWindow(int w, int h, const char *title)
     top_title->labelcolor(ui(238, 245, 252));
     top_title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
-    const int panel_x = 10;
     const int panel_y = 46;
-    const int panel_w = 334;
     const int panel_h = h - panel_y - 12;
 
-    auto *left_panel_bg = new Fl_Box(FL_THIN_UP_BOX, panel_x, panel_y, panel_w, panel_h, "");
-    left_panel_bg->color(ui(248, 251, 255));
-    auto *left_panel_accent = new Fl_Box(FL_FLAT_BOX, panel_x, panel_y, 4, panel_h, "");
-    left_panel_accent->color(ui(154, 184, 204));
+    // ── Panel A: Molecule list sidebar (x=10, w=220) ─────────────────────────
+    const int panel_a_x = 10;
+    const int panel_a_w = 220;
 
-    auto *left_title = new Fl_Box(panel_x + 10, panel_y + 8, panel_w - 20, 22, "Molecule Setup");
-    left_title->box(FL_NO_BOX);
-    left_title->labelfont(FL_HELVETICA_BOLD);
-    left_title->labelsize(11);
-    left_title->labelcolor(ui(67, 77, 92));
-    left_title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    auto *mol_panel_bg = new Fl_Box(FL_THIN_UP_BOX, panel_a_x, panel_y, panel_a_w, panel_h, "");
+    mol_panel_bg->color(ui(248, 251, 255));
+    auto *mol_panel_accent = new Fl_Box(FL_FLAT_BOX, panel_a_x, panel_y, 4, panel_h, "");
+    mol_panel_accent->color(ui(154, 184, 204));
 
-    auto *job_name_label = new Fl_Box(panel_x + 10, panel_y + 34, 120, 16, "Job name");
+    auto *mol_title = new Fl_Box(panel_a_x + 10, panel_y + 8, panel_a_w - 20, 22, "Molecules");
+    mol_title->box(FL_NO_BOX);
+    mol_title->labelfont(FL_HELVETICA_BOLD);
+    mol_title->labelsize(11);
+    mol_title->labelcolor(ui(67, 77, 92));
+    mol_title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+
+    queue_browser_ = new Fl_Hold_Browser(panel_a_x + 10, panel_y + 32, panel_a_w - 20, panel_h - 90);
+    queue_browser_->callback(on_select_job_cb, this);
+    queue_browser_->box(FL_DOWN_BOX);
+    queue_browser_->color(ui(255, 255, 255));
+    queue_browser_->textsize(12);
+    queue_browser_->textfont(FL_HELVETICA_BOLD);
+    queue_browser_->selection_color(ui(224, 236, 248));
+    static int queue_col_widths[] = {20, 180, 0};
+    queue_browser_->column_char('\t');
+    queue_browser_->column_widths(queue_col_widths);
+
+    const int mol_btn_y = panel_y + panel_h - 56;
+    run_selected_button_ = new Fl_Button(panel_a_x + 10, mol_btn_y, 70, 26, "Run Sel");
+    run_selected_button_->callback(on_run_selected_cb, this);
+    run_selected_button_->box(FL_UP_BOX);
+    run_selected_button_->color(ui(186, 204, 229));
+    run_selected_button_->labelcolor(ui(59, 73, 94));
+    run_selected_button_->labelfont(FL_HELVETICA_BOLD);
+    run_selected_button_->labelsize(11);
+
+    start_button_ = new Fl_Button(panel_a_x + 84, mol_btn_y, 72, 26, "Run All");
+    start_button_->callback(on_start_queue_cb, this);
+    start_button_->box(FL_UP_BOX);
+    start_button_->color(ui(168, 205, 194));
+    start_button_->labelcolor(ui(52, 66, 66));
+    start_button_->labelfont(FL_HELVETICA_BOLD);
+    start_button_->labelsize(11);
+    start_button_->tooltip("Run all pending jobs in the queue.\nShortcut: Ctrl+R / Cmd+R");
+
+    cancel_button_ = new Fl_Button(panel_a_x + 160, mol_btn_y, 50, 26, "Cancel");
+    cancel_button_->callback(on_cancel_cb, this);
+    cancel_button_->box(FL_UP_BOX);
+    cancel_button_->color(ui(223, 229, 238));
+    cancel_button_->labelcolor(ui(88, 98, 112));
+    cancel_button_->labelsize(11);
+    cancel_button_->tooltip("Cancel the running job queue.");
+
+    status_box_ = new Fl_Box(panel_a_x + 10, panel_y + panel_h - 26, panel_a_w - 20, 22, "Idle");
+    status_box_->box(FL_FLAT_BOX);
+    status_box_->color(ui(229, 236, 246));
+    status_box_->labelsize(11);
+    status_box_->labelcolor(ui(67, 77, 92));
+    status_box_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+
+    // ── Panel B: Setup + Structure (x=240, w=400) ────────────────────────────
+    const int centre_x = 240;
+    const int centre_w = 400;
+    const int cx = centre_x + 10; // inner left edge
+    const int cw = centre_w - 20; // inner width
+
+    auto *centre_bg = new Fl_Box(FL_THIN_UP_BOX, centre_x, panel_y, centre_w, panel_h, "");
+    centre_bg->color(ui(248, 251, 255));
+    auto *centre_accent = new Fl_Box(FL_FLAT_BOX, centre_x, panel_y, 4, panel_h, "");
+    centre_accent->color(ui(154, 184, 204));
+
+    auto *centre_title = new Fl_Box(cx, panel_y + 8, cw, 22, "Molecule Setup");
+    centre_title->box(FL_NO_BOX);
+    centre_title->labelfont(FL_HELVETICA_BOLD);
+    centre_title->labelsize(11);
+    centre_title->labelcolor(ui(67, 77, 92));
+    centre_title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+
+    auto *job_name_label = new Fl_Box(cx, panel_y + 34, 120, 16, "Job name");
     job_name_label->box(FL_NO_BOX);
     job_name_label->labelsize(12);
     job_name_label->labelcolor(ui(86, 97, 112));
     job_name_label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
-    job_name_input_ = new Fl_Input(panel_x + 10, panel_y + 50, panel_w - 20, 26);
+    job_name_input_ = new Fl_Input(cx, panel_y + 50, cw, 26);
     job_name_input_->value("untitled");
     job_name_input_->box(FL_DOWN_BOX);
     job_name_input_->color(ui(255, 255, 255));
 
-    auto *workflow_label = new Fl_Box(panel_x + 10, panel_y + 82, 100, 16, "Workflow");
+    auto *workflow_label = new Fl_Box(cx, panel_y + 82, 100, 16, "Workflow");
     workflow_label->box(FL_NO_BOX);
     workflow_label->labelsize(12);
     workflow_label->labelcolor(ui(86, 97, 112));
     workflow_label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
-    workflow_choice_ = new Fl_Choice(panel_x + 10, panel_y + 98, 100, 26);
+    workflow_choice_ = new Fl_Choice(cx, panel_y + 98, 110, 26);
     workflow_choice_->add("all");
     workflow_choice_->add("nmr");
     workflow_choice_->add("cd");
-    workflow_choice_->add("compare");
     workflow_choice_->value(0);
     workflow_choice_->box(FL_DOWN_BOX);
     workflow_choice_->color(ui(255, 255, 255));
-    workflow_choice_->callback([](Fl_Widget *w, void *ud) {
-        auto *self = static_cast<AppWindow *>(ud);
-        const Fl_Choice *ch = static_cast<Fl_Choice *>(w);
-        const char *sel = ch->text(ch->value());
-        const bool is_compare = sel != nullptr && std::string(sel) == "compare";
-        if (self->compare_input_label_ != nullptr) {
-            if (is_compare) {
-                self->compare_input_label_->show();
-            } else {
-                self->compare_input_label_->hide();
-            }
-        }
-        if (self->compare_input_box_ != nullptr) {
-            if (is_compare) {
-                self->compare_input_box_->show();
-            } else {
-                self->compare_input_box_->hide();
-            }
-        }
-        on_preview_cb(w, ud);
-    }, this);
+    workflow_choice_->callback(on_preview_cb, this);
 
-    auto *solvent_label = new Fl_Box(panel_x + 116, panel_y + 82, 208, 16, "Solvent");
+    auto *solvent_label = new Fl_Box(cx + 116, panel_y + 82, cw - 116, 16, "Solvent");
     solvent_label->box(FL_NO_BOX);
     solvent_label->labelsize(12);
     solvent_label->labelcolor(ui(86, 97, 112));
     solvent_label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
-    solvent_choice_ = new Fl_Choice(panel_x + 116, panel_y + 98, 208, 26);
+    solvent_choice_ = new Fl_Choice(cx + 116, panel_y + 98, cw - 116, 26);
     solvent_choice_->add("cdcl3");
     solvent_choice_->add("dmso");
     solvent_choice_->add("h2o");
@@ -1540,39 +1615,34 @@ AppWindow::AppWindow(int w, int h, const char *title)
     solvent_choice_->color(ui(255, 255, 255));
     solvent_choice_->callback(on_preview_cb, this);
 
-    auto *input_label = new Fl_Box(panel_x + 10, panel_y + 128, panel_w - 20, 16, "SMILES / structure text");
+    auto *input_label = new Fl_Box(cx, panel_y + 132, cw - 82, 16, "SMILES / structure text");
     input_label->box(FL_NO_BOX);
     input_label->labelsize(12);
     input_label->labelcolor(ui(86, 97, 112));
     input_label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
-    input_box_ = new ColoredInputEditor(panel_x + 10, panel_y + 144, panel_w - 20, 64);
+    input_mode_btn_ = new Fl_Button(cx + cw - 78, panel_y + 132, 78, 16, "SMILES");
+    input_mode_btn_->box(FL_FLAT_BOX);
+    input_mode_btn_->color(ui(213, 226, 242));
+    input_mode_btn_->labelcolor(ui(58, 80, 108));
+    input_mode_btn_->labelsize(10);
+    input_mode_btn_->callback([](Fl_Widget *, void *ud) {
+        static_cast<AppWindow *>(ud)->cycle_input_mode();
+    }, this);
+
+    input_box_ = new ColoredInputEditor(cx, panel_y + 148, cw, 64);
     input_box_->value("CCO");
     input_box_->set_syntax_mode(InputSyntaxMode::SmilesLike);
     input_box_->when(FL_WHEN_CHANGED | FL_WHEN_ENTER_KEY);
     input_box_->callback(on_preview_cb, this);
 
-    compare_input_label_ = new Fl_Box(panel_x + 10, panel_y + 212, panel_w - 20, 16, "Product SMILES");
-    compare_input_label_->box(FL_NO_BOX);
-    compare_input_label_->labelsize(12);
-    compare_input_label_->labelcolor(ui(86, 97, 112));
-    compare_input_label_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    compare_input_label_->hide();
-
-    compare_input_box_ = new ColoredInputEditor(panel_x + 10, panel_y + 228, panel_w - 20, 48);
-    compare_input_box_->value("");
-    compare_input_box_->set_syntax_mode(InputSyntaxMode::SmilesLike);
-    compare_input_box_->when(FL_WHEN_CHANGED | FL_WHEN_ENTER_KEY);
-    compare_input_box_->callback(on_preview_cb, this);
-    compare_input_box_->hide();
-
-    auto *structure_title = new Fl_Box(panel_x + 10, panel_y + 216, panel_w - 214, 20, "Interactive Structure");
+    auto *structure_title = new Fl_Box(cx, panel_y + 296, cw - 196, 20, "Interactive Structure");
     structure_title->box(FL_NO_BOX);
     structure_title->labelsize(12);
     structure_title->labelcolor(ui(86, 97, 112));
     structure_title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
-    edit_button_ = new Fl_Button(panel_x + panel_w - 196, panel_y + 214, 104, 24, "Edit xyzedit");
+    edit_button_ = new Fl_Button(cx + cw - 196, panel_y + 294, 104, 24, "Edit xyzedit");
     edit_button_->callback(on_edit_structure_cb, this);
     edit_button_->box(FL_UP_BOX);
     edit_button_->color(ui(207, 218, 233));
@@ -1580,7 +1650,7 @@ AppWindow::AppWindow(int w, int h, const char *title)
     edit_button_->labelfont(FL_HELVETICA_BOLD);
     edit_button_->labelsize(11);
 
-    preview_button_ = new Fl_Button(panel_x + panel_w - 86, panel_y + 214, 76, 24, "Preview");
+    preview_button_ = new Fl_Button(cx + cw - 86, panel_y + 294, 76, 24, "Preview");
     preview_button_->callback(on_preview_cb, this);
     preview_button_->box(FL_UP_BOX);
     preview_button_->color(ui(198, 211, 228));
@@ -1588,10 +1658,10 @@ AppWindow::AppWindow(int w, int h, const char *title)
     preview_button_->labelfont(FL_HELVETICA_BOLD);
     preview_button_->labelsize(11);
 
-    structure_area_x_ = panel_x + 10;
-    structure_area_y_ = panel_y + 240;
-    structure_area_w_ = panel_w - 20;
-    structure_area_h_ = 160;
+    structure_area_x_ = cx;
+    structure_area_y_ = panel_y + 322;
+    structure_area_w_ = cw;
+    structure_area_h_ = 380;
 
     structure_current_label_ = new Fl_Box(structure_area_x_, structure_area_y_, structure_area_w_ / 2, 16, "");
     structure_current_label_->box(FL_NO_BOX);
@@ -1624,62 +1694,16 @@ AppWindow::AppWindow(int w, int h, const char *title)
     compare_structure_widget_->set_empty_message("No comparison structure");
     compare_structure_widget_->hide();
 
-    queue_button_ = new Fl_Button(panel_x + 10, panel_y + 406, 100, 30, "Queue");
+    queue_button_ = new Fl_Button(cx, panel_y + 712, 120, 26, "Queue");
     queue_button_->callback(on_queue_job_cb, this);
     queue_button_->box(FL_UP_BOX);
     queue_button_->color(ui(218, 225, 236));
     queue_button_->labelcolor(ui(63, 73, 86));
     queue_button_->labelfont(FL_HELVETICA_BOLD);
+    queue_button_->labelsize(11);
     queue_button_->tooltip("Add current input to the job queue.\nShortcut: Ctrl+Enter / Cmd+Enter");
 
-    start_button_ = new Fl_Button(panel_x + 116, panel_y + 406, 110, 30, "Run Pending");
-    start_button_->callback(on_start_queue_cb, this);
-    start_button_->box(FL_UP_BOX);
-    start_button_->color(ui(168, 205, 194));
-    start_button_->labelcolor(ui(52, 66, 66));
-    start_button_->labelfont(FL_HELVETICA_BOLD);
-    start_button_->tooltip("Run all pending jobs in the queue.\nShortcut: Ctrl+R / Cmd+R");
-
-    cancel_button_ = new Fl_Button(panel_x + 232, panel_y + 406, 92, 30, "Cancel");
-    cancel_button_->callback(on_cancel_cb, this);
-    cancel_button_->box(FL_UP_BOX);
-    cancel_button_->color(ui(223, 229, 238));
-    cancel_button_->labelcolor(ui(88, 98, 112));
-    cancel_button_->tooltip("Cancel the running job queue.");
-
-    auto *queue_title = new Fl_Box(panel_x + 10, panel_y + 444, panel_w - 20, 20, "Queue (A=current, B=compare)");
-    queue_title->box(FL_NO_BOX);
-    queue_title->labelsize(12);
-    queue_title->labelcolor(ui(86, 97, 112));
-    queue_title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-
-    queue_browser_ = new Fl_Hold_Browser(panel_x + 10, panel_y + 468, panel_w - 20, 122);
-    queue_browser_->callback(on_select_job_cb, this);
-    queue_browser_->box(FL_DOWN_BOX);
-    queue_browser_->color(ui(255, 255, 255));
-    queue_browser_->textsize(12);
-    queue_browser_->textfont(FL_HELVETICA_BOLD);
-    queue_browser_->selection_color(ui(224, 236, 248));
-    static int queue_col_widths[] = {16, 24, 40, 112, 36, 72, 0};
-    queue_browser_->column_char('\t');
-    queue_browser_->column_widths(queue_col_widths);
-
-    run_selected_button_ = new Fl_Button(panel_x + 10, panel_y + 596, 100, 24, "Run Selected");
-    run_selected_button_->callback(on_run_selected_cb, this);
-    run_selected_button_->box(FL_UP_BOX);
-    run_selected_button_->color(ui(186, 204, 229));
-    run_selected_button_->labelcolor(ui(59, 73, 94));
-    run_selected_button_->labelfont(FL_HELVETICA_BOLD);
-    run_selected_button_->labelsize(11);
-
-    status_box_ = new Fl_Box(panel_x + 10, panel_y + 626, panel_w - 20, 26, "Idle");
-    status_box_->box(FL_FLAT_BOX);
-    status_box_->color(ui(229, 236, 246));
-    status_box_->labelsize(11);
-    status_box_->labelcolor(ui(67, 77, 92));
-    status_box_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-
-    const int right_x = panel_x + panel_w + 10;
+    const int right_x = 650;
     const int right_y = panel_y;
     const int right_w = w - right_x - 10;
     const int spectrum_h = h - right_y - 250;
@@ -1889,6 +1913,49 @@ AppWindow::AppWindow(int w, int h, const char *title)
         examples_tab->end();
     }
 
+    // ── TAB 4: Comparison ────────────────────────────────────────────────────
+    {
+        auto *comparison_tab = new Fl_Group(right_x, tab_inner_y, right_w, tab_inner_h, "Comparison");
+        comparison_tab->box(FL_FLAT_BOX);
+        comparison_tab->color(ui(250, 252, 255));
+
+        comparison_placeholder_ = new Fl_Box(right_x + 4, tab_inner_y + 4, right_w - 8, tab_inner_h - 8,
+            "No comparison active.\n"
+            "Right-click a job in the molecule list\n"
+            "and choose \"Compare to [other job]\".");
+        comparison_placeholder_->box(FL_NO_BOX);
+        comparison_placeholder_->labelsize(11);
+        comparison_placeholder_->labelcolor(ui(140, 152, 168));
+        comparison_placeholder_->align(FL_ALIGN_CENTER | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
+
+        comparison_header_box_ = new Fl_Box(right_x + 4, tab_inner_y + 4, right_w - 8, 20, "");
+        comparison_header_box_->box(FL_NO_BOX);
+        comparison_header_box_->labelsize(12);
+        comparison_header_box_->labelfont(FL_HELVETICA_BOLD);
+        comparison_header_box_->labelcolor(ui(58, 70, 88));
+        comparison_header_box_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+        comparison_header_box_->hide();
+
+        comparison_overall_box_ = new Fl_Box(FL_DOWN_BOX, right_x + 4, tab_inner_y + 28, right_w - 8, 28, "");
+        comparison_overall_box_->labelsize(12);
+        comparison_overall_box_->labelfont(FL_HELVETICA_BOLD);
+        comparison_overall_box_->align(FL_ALIGN_CENTER | FL_ALIGN_INSIDE);
+        comparison_overall_box_->hide();
+
+        static const char *const kNucleiLabels[4] = {"1H", "13C", "19F", "31P"};
+        for (int ni = 0; ni < 4; ++ni) {
+            comparison_nucleus_rows_[ni] = new Fl_Box(
+                FL_DOWN_BOX, right_x + 4, tab_inner_y + 62 + ni * 34, right_w - 8, 28, "");
+            comparison_nucleus_rows_[ni]->labelsize(11);
+            comparison_nucleus_rows_[ni]->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+            comparison_nucleus_rows_[ni]->labelcolor(ui(58, 70, 88));
+            comparison_nucleus_rows_[ni]->hide();
+            (void)kNucleiLabels[ni];
+        }
+
+        comparison_tab->end();
+    }
+
     bottom_tabs->end();
 
     end();
@@ -1918,6 +1985,13 @@ AppWindow::~AppWindow() {
 int AppWindow::handle(int event) {
     if (event == FL_PUSH && Fl::event_button() == FL_RIGHT_MOUSE) {
         if (maybe_show_queue_context_menu()) {
+            return 1;
+        }
+    }
+
+    if (event == FL_KEYBOARD && Fl::event_key() == FL_Tab) {
+        if (Fl::focus() == input_box_) {
+            cycle_input_mode();
             return 1;
         }
     }
@@ -2063,6 +2137,7 @@ void AppWindow::on_worker_awake(void *userdata) {
 void AppWindow::on_ui_tick_cb(void *userdata) {
     auto *self = static_cast<AppWindow *>(userdata);
     self->poll_preview_async();
+    self->poll_pubchem_lookup();
     bool has_running_work = self->worker_running_.load();
     if (!has_running_work) {
         std::lock_guard<std::mutex> lock(self->jobs_mutex_);
@@ -2096,6 +2171,17 @@ void AppWindow::refresh_input_syntax_mode() {
 
 void AppWindow::queue_current_input() {
     refresh_input_syntax_mode();
+
+    if (input_mode_ == InputMode::PubchemName) {
+        std::string name;
+        if (input_box_ != nullptr) {
+            const char *p = input_box_->value();
+            if (p != nullptr) name = p;
+        }
+        launch_pubchem_lookup(trim_copy(name), true);
+        return;
+    }
+
     std::string raw_input;
     if (input_box_ != nullptr) {
         const char *raw_ptr = input_box_->value();
@@ -2157,11 +2243,6 @@ void AppWindow::queue_current_input() {
             job.config.solvent = solvent ? solvent : "cdcl3";
             job.config.nucleus = "auto";
             job.config.line_shape = "lorentzian";
-            if (workflow_kind == WorkflowKind::Compare && compare_input_box_ != nullptr) {
-                const char *cmp_ptr = compare_input_box_->value();
-                job.config.compare_input_value = cmp_ptr != nullptr ? cmp_ptr : "";
-                job.config.compare_input_format = InputFormat::Smiles;
-            }
             job.id = "q" + std::to_string(jobs_.size() + 1);
             jobs_.push_back(std::move(job));
             if (!queued_any) {
@@ -2363,6 +2444,18 @@ void AppWindow::poll_preview_async() {
 
 void AppWindow::preview_current_input(bool show_status) {
     refresh_input_syntax_mode();
+
+    if (input_mode_ == InputMode::PubchemName) {
+        std::string name;
+        if (input_box_ != nullptr) {
+            const char *p = input_box_->value();
+            if (p != nullptr) name = p;
+        }
+        if (!trim_copy(name).empty()) {
+            launch_pubchem_lookup(trim_copy(name), false);
+        }
+        return;
+    }
 
     if (worker_running_) {
         if (show_status) {
@@ -3270,6 +3363,7 @@ void AppWindow::clear_comparison_state(bool clear_selected_job) {
         compare_structure_widget_->clear_highlight();
     }
     update_structure_compare_layout(false);
+    clear_comparison_analysis();
 }
 
 void AppWindow::update_structure_compare_layout(bool compare_mode) {
@@ -3286,19 +3380,23 @@ void AppWindow::update_structure_compare_layout(bool compare_mode) {
         return;
     }
 
+    // Vertical stacking: A on top, B below
     const int label_h = 16;
-    const int gap = 8;
-    const int split_w = (structure_area_w_ - gap) / 2;
-    const int widget_y = structure_area_y_ + label_h + 2;
-    const int widget_h = std::max(56, structure_area_h_ - label_h - 2);
+    const int gap = 12;
+    // 4 = two 2-px label-to-widget gaps (one per slot)
+    const int slot_h = std::max(56, (structure_area_h_ - label_h * 2 - 4 - gap) / 2);
 
-    structure_current_label_->resize(structure_area_x_, structure_area_y_, split_w, label_h);
-    structure_compare_label_->resize(structure_area_x_ + split_w + gap, structure_area_y_, split_w, label_h);
+    // A (primary)
+    structure_current_label_->resize(structure_area_x_, structure_area_y_, structure_area_w_, label_h);
+    structure_widget_->resize(structure_area_x_, structure_area_y_ + label_h + 2, structure_area_w_, slot_h);
     structure_current_label_->show();
-    structure_compare_label_->show();
 
-    structure_widget_->resize(structure_area_x_, widget_y, split_w, widget_h);
-    compare_structure_widget_->resize(structure_area_x_ + split_w + gap, widget_y, split_w, widget_h);
+    // B (comparison)
+    const int b_label_y = structure_area_y_ + label_h + 2 + slot_h + gap;
+    structure_compare_label_->resize(structure_area_x_, b_label_y, structure_area_w_, label_h);
+    compare_structure_widget_->resize(
+        structure_area_x_, b_label_y + label_h + 2, structure_area_w_, slot_h);
+    structure_compare_label_->show();
     compare_structure_widget_->show();
 }
 
@@ -3410,6 +3508,8 @@ void AppWindow::apply_comparison_visuals(const QueuedJob &active_job) {
     }
     update_structure_compare_layout(true);
 
+    run_comparison_analysis();
+
     std::ostringstream status;
     status << "Comparing " << compare_job.config.job_name << " vs " << active_job.config.job_name
            << " (" << active_nucleus_ << ")";
@@ -3455,6 +3555,281 @@ void AppWindow::on_manual_shift_pair(int primary_group_id, int compare_group_id)
            << " | delta " << std::showpos << std::fixed << std::setprecision(2) << delta_ppm
            << " ppm " << (delta_ppm > 0.0 ? "(downfield)" : "(upfield)");
     status_box_->copy_label(status.str().c_str());
+}
+
+// ── Comparison Analysis ───────────────────────────────────────────────────────
+
+namespace {
+
+struct NucleusCompareResult {
+    double similarity_pct = 0.0;
+    int retained = 0;
+    int shifted = 0;
+    int lost = 0;
+    int new_peaks = 0;
+    std::string indicator; // "no_reaction" | "reaction_likely" | "inconclusive"
+};
+
+double ppm_tolerance_for(const std::string &nucleus) {
+    if (nucleus == "1H")  return 0.30;
+    if (nucleus == "13C") return 2.00;
+    if (nucleus == "19F") return 0.50;
+    return 1.00; // 31P and others
+}
+
+NucleusCompareResult compare_peaks_for_nucleus(
+    const std::map<int, double> &primary_ppm,
+    const std::map<int, double> &compare_ppm,
+    double tolerance)
+{
+    NucleusCompareResult result;
+    if (primary_ppm.empty() && compare_ppm.empty()) {
+        result.indicator = "no_reaction";
+        result.similarity_pct = 100.0;
+        return result;
+    }
+
+    std::vector<double> a, b;
+    a.reserve(primary_ppm.size());
+    b.reserve(compare_ppm.size());
+    for (const auto &kv : primary_ppm) a.push_back(kv.second);
+    for (const auto &kv : compare_ppm)  b.push_back(kv.second);
+    std::sort(a.begin(), a.end());
+    std::sort(b.begin(), b.end());
+
+    std::vector<bool> b_used(b.size(), false);
+
+    for (double pa : a) {
+        int best_j = -1;
+        double best_dist = std::numeric_limits<double>::max();
+        for (int j = 0; j < static_cast<int>(b.size()); ++j) {
+            if (b_used[j]) continue;
+            const double dist = std::abs(pa - b[j]);
+            if (dist <= tolerance && dist < best_dist) {
+                best_dist = dist;
+                best_j = j;
+            }
+        }
+        if (best_j >= 0) {
+            b_used[best_j] = true;
+            if (best_dist < 0.05) {
+                ++result.retained;
+            } else {
+                ++result.shifted;
+            }
+        } else {
+            ++result.lost;
+        }
+    }
+    for (bool used : b_used) {
+        if (!used) ++result.new_peaks;
+    }
+
+    const int denom = static_cast<int>(std::max(a.size(), b.size()));
+    result.similarity_pct = denom > 0
+        ? 100.0 * (result.retained + result.shifted) / denom
+        : 100.0;
+
+    if (result.similarity_pct >= 92.0 && result.lost == 0 && result.new_peaks == 0 && result.shifted == 0) {
+        result.indicator = "no_reaction";
+    } else if (result.similarity_pct < 60.0 || (result.lost + result.new_peaks) >= 2) {
+        result.indicator = "reaction_likely";
+    } else {
+        result.indicator = "inconclusive";
+    }
+    return result;
+}
+
+} // anonymous namespace (comparison helpers)
+
+void AppWindow::run_comparison_analysis() {
+    if (comparison_placeholder_ == nullptr || comparison_header_box_ == nullptr
+        || comparison_overall_box_ == nullptr) {
+        return;
+    }
+    if (comparison_job_index_ < 0 || selected_job_index_ < 0) {
+        clear_comparison_analysis();
+        return;
+    }
+
+    std::string primary_name, compare_name;
+    {
+        std::lock_guard<std::mutex> lock(jobs_mutex_);
+        if (selected_job_index_ >= static_cast<int>(jobs_.size())
+            || comparison_job_index_ >= static_cast<int>(jobs_.size())) {
+            clear_comparison_analysis();
+            return;
+        }
+        primary_name = jobs_[static_cast<std::size_t>(selected_job_index_)].config.job_name;
+        compare_name = jobs_[static_cast<std::size_t>(comparison_job_index_)].config.job_name;
+    }
+
+    const double tol = ppm_tolerance_for(active_nucleus_);
+    const NucleusCompareResult res = compare_peaks_for_nucleus(primary_group_to_ppm_, comparison_group_to_ppm_, tol);
+
+    // Header
+    const std::string header = "A: " + truncate_text(primary_name, 20) + "  vs  B: " + truncate_text(compare_name, 20);
+    comparison_header_box_->copy_label(header.c_str());
+
+    // Overall verdict
+    std::string verdict_label;
+    Fl_Color overall_color;
+    Fl_Color overall_text_color;
+    if (res.indicator == "no_reaction") {
+        verdict_label = "NO CHANGE DETECTED";
+        overall_color  = ui(208, 240, 216);
+        overall_text_color = ui(45, 108, 65);
+    } else if (res.indicator == "reaction_likely") {
+        verdict_label = "REACTION LIKELY";
+        overall_color  = ui(245, 208, 208);
+        overall_text_color = ui(140, 40, 40);
+    } else {
+        verdict_label = "INCONCLUSIVE";
+        overall_color  = ui(245, 237, 208);
+        overall_text_color = ui(130, 96, 20);
+    }
+    comparison_overall_box_->copy_label(verdict_label.c_str());
+    comparison_overall_box_->color(overall_color);
+    comparison_overall_box_->labelcolor(overall_text_color);
+
+    // Nucleus row for active nucleus
+    static const char *const kNuclei[4] = {"1H", "13C", "19F", "31P"};
+    for (int ni = 0; ni < 4; ++ni) {
+        if (comparison_nucleus_rows_[ni] == nullptr) continue;
+        if (std::string(kNuclei[ni]) == active_nucleus_) {
+            std::ostringstream oss;
+            oss << "  " << active_nucleus_ << "   sim " << std::fixed << std::setprecision(0)
+                << res.similarity_pct << "%   "
+                << "retained " << res.retained << "  shifted " << res.shifted
+                << "  lost " << res.lost << "  new " << res.new_peaks;
+            comparison_nucleus_rows_[ni]->copy_label(oss.str().c_str());
+            comparison_nucleus_rows_[ni]->show();
+        } else {
+            comparison_nucleus_rows_[ni]->copy_label("");
+            comparison_nucleus_rows_[ni]->hide();
+        }
+    }
+
+    comparison_placeholder_->hide();
+    comparison_header_box_->show();
+    comparison_overall_box_->show();
+    comparison_overall_box_->redraw();
+}
+
+void AppWindow::clear_comparison_analysis() {
+    if (comparison_placeholder_ != nullptr) comparison_placeholder_->show();
+    if (comparison_header_box_ != nullptr) comparison_header_box_->hide();
+    if (comparison_overall_box_ != nullptr) comparison_overall_box_->hide();
+    for (auto *row : comparison_nucleus_rows_) {
+        if (row != nullptr) row->hide();
+    }
+}
+
+// ── Input Mode Cycling + PubChem ──────────────────────────────────────────────
+
+void AppWindow::cycle_input_mode() {
+    switch (input_mode_) {
+    case InputMode::Smiles:
+        input_mode_ = InputMode::PubchemName;
+        if (input_mode_btn_ != nullptr) input_mode_btn_->copy_label("Name");
+        if (input_box_ != nullptr) input_box_->set_syntax_mode(InputSyntaxMode::SmilesLike);
+        break;
+    case InputMode::PubchemName:
+        input_mode_ = InputMode::Xyz;
+        if (input_mode_btn_ != nullptr) input_mode_btn_->copy_label("XYZ");
+        if (input_box_ != nullptr) input_box_->set_syntax_mode(InputSyntaxMode::XyzLike);
+        break;
+    case InputMode::Xyz:
+        input_mode_ = InputMode::Smiles;
+        if (input_mode_btn_ != nullptr) input_mode_btn_->copy_label("SMILES");
+        if (input_box_ != nullptr) input_box_->set_syntax_mode(InputSyntaxMode::SmilesLike);
+        break;
+    }
+    if (input_mode_btn_ != nullptr) input_mode_btn_->redraw();
+    if (status_box_ != nullptr) {
+        if (input_mode_ == InputMode::PubchemName) {
+            status_box_->label("Name mode: type a compound name, then Queue or Preview");
+        } else if (input_mode_ == InputMode::Xyz) {
+            status_box_->label("XYZ mode: paste XYZ coordinates");
+        } else {
+            status_box_->label("SMILES mode");
+        }
+    }
+}
+
+void AppWindow::launch_pubchem_lookup(const std::string &name, bool then_queue) {
+    if (pubchem_future_active_) {
+        status_box_->label("PubChem lookup already in progress");
+        return;
+    }
+    if (name.empty()) {
+        status_box_->label("Enter a compound name first");
+        return;
+    }
+    pubchem_then_queue_ = then_queue;
+    pubchem_future_active_ = true;
+    status_box_->label("Resolving compound name via PubChem...");
+
+    const std::string quoted = shell_quote(name);
+    pubchem_future_ = std::async(std::launch::async, [quoted]() -> std::string {
+        const std::string cmd =
+            "python3 -c \""
+            "import sys,urllib.request,urllib.parse,json; "
+            "n=sys.argv[1]; "
+            "try:\n"
+            "  r=urllib.request.urlopen('https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/'+urllib.parse.quote(n)+'/property/IsomericSMILES/JSON',timeout=8);\n"
+            "  d=json.loads(r.read());\n"
+            "  print(d['PropertyTable']['Properties'][0]['IsomericSMILES'])\n"
+            "except Exception as e:\n"
+            "  print('ERROR:'+str(e))\n"
+            "\" " + quoted;
+        FILE *pipe = popen(cmd.c_str(), "r");
+        if (!pipe) return "ERROR:popen failed";
+        std::string result;
+        char buf[256];
+        while (fgets(buf, sizeof(buf), pipe) != nullptr) {
+            result += buf;
+        }
+        pclose(pipe);
+        // trim trailing newline
+        while (!result.empty() && (result.back() == '\n' || result.back() == '\r')) {
+            result.pop_back();
+        }
+        return result.empty() ? "ERROR:no output" : result;
+    });
+}
+
+void AppWindow::poll_pubchem_lookup() {
+    if (!pubchem_future_active_ || !pubchem_future_.valid()) return;
+    if (pubchem_future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+
+    pubchem_future_active_ = false;
+    const std::string result = pubchem_future_.get();
+
+    if (result.rfind("ERROR:", 0) == 0) {
+        const std::string msg = "PubChem error: " + result.substr(6);
+        status_box_->copy_label(msg.c_str());
+        return;
+    }
+
+    // Success — fill SMILES, switch mode, proceed
+    if (input_box_ != nullptr) {
+        input_box_->value(result.c_str());
+    }
+    input_mode_ = InputMode::Smiles;
+    if (input_mode_btn_ != nullptr) {
+        input_mode_btn_->copy_label("SMILES");
+        input_mode_btn_->redraw();
+    }
+    if (input_box_ != nullptr) {
+        input_box_->set_syntax_mode(InputSyntaxMode::SmilesLike);
+    }
+
+    if (pubchem_then_queue_) {
+        queue_current_input();
+    } else {
+        preview_current_input(true);
+    }
 }
 
 void AppWindow::on_peak_picked(int group_id) {
@@ -4471,13 +4846,15 @@ void AppWindow::refresh_queue_browser() {
         const bool is_compare_role = (row_index == comparison_job_index_);
         queue_browser_->add(format_label_for(jobs_[i], is_selected, is_primary_role, is_compare_role).c_str());
         const int browser_row = queue_browser_->size();
-        if (is_primary_role) {
-            queue_browser_->icon(browser_row, &kRoleBlueDot);
-        } else if (is_compare_role) {
-            queue_browser_->icon(browser_row, &kRoleGreenDot);
-        } else {
-            queue_browser_->icon(browser_row, nullptr);
+        Fl_Pixmap *dot = &kStatusPendingDot;
+        if (jobs_[i].status == "running") {
+            dot = &kStatusRunningDot;
+        } else if (jobs_[i].status == "done") {
+            dot = &kStatusDoneDot;
+        } else if (jobs_[i].status == "failed") {
+            dot = &kStatusFailedDot;
         }
+        queue_browser_->icon(browser_row, dot);
     }
 
     if (selected > 0 && selected <= queue_browser_->size()) {

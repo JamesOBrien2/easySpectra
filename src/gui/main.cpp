@@ -9,7 +9,7 @@ int main() {
     Fl::background2(248, 250, 253);
     Fl::foreground(67, 77, 92);
 
-    easynmr::AppWindow window(1320, 760, "easySpectra");
+    easynmr::AppWindow window(1600, 900, "easySpectra");
     window.show();
     return Fl::run();
 }
