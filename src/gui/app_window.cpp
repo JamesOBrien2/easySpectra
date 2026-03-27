@@ -403,7 +403,7 @@ void trim_white_border(
         return;
     }
 
-    const int kPad = 2;
+    const int kPad = 4;
     min_x = std::max(0, min_x - kPad);
     min_y = std::max(0, min_y - kPad);
     max_x = std::min(src_w - 1, max_x + kPad);

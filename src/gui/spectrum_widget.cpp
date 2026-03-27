@@ -739,9 +739,10 @@ void SpectrumWidget::draw() {
         }
     }
 
-    const int tick_font_size = std::clamp(plot_w / 120, 8, 10);
-    const int axis_font_size = std::clamp(plot_w / 95, 9, 11);
-    const int zoom_font_size = std::clamp(plot_w / 95, 9, 11);
+    // Scale fonts with plot dimensions; allow down to 7pt for very small exports.
+    const int tick_font_size = std::clamp(plot_w / 90, 7, 10);
+    const int axis_font_size = std::clamp(plot_w / 72, 8, 11);
+    const int zoom_font_size = std::clamp(plot_w / 72, 8, 11);
 
     if (zoom_active_) {
         std::ostringstream zoom_note;
@@ -757,9 +758,16 @@ void SpectrumWidget::draw() {
         fl_draw(zoom_note.str().c_str(), plot_x0 + 130, y() + 18);
     }
 
-    fl_color(pal.tick);
+    // Reduce tick density for narrow plots to prevent label collision.
+    // Require ~38px per label at the current font size; fall back to 5 or 3 ticks.
     fl_font(FL_HELVETICA, tick_font_size);
-    for (int i = 0; i <= 10; ++i) {
+    const int approx_label_w = tick_font_size * 5; // conservative estimate
+    const int max_ticks = (plot_w > 0) ? std::max(2, plot_w / approx_label_w) : 10;
+    const int tick_step = (max_ticks >= 10) ? 1 : (max_ticks >= 5) ? 2 : 5;
+
+    fl_color(pal.tick);
+    const int precision = (ppm_range < 3.0) ? 2 : 1;
+    for (int i = 0; i <= 10; i += tick_step) {
         const int tick_x = plot_x0 + i * plot_w / 10;
         double ppm_tick = 0.0;
         if (reverse_axis) {
@@ -768,18 +776,21 @@ void SpectrumWidget::draw() {
             ppm_tick = min_ppm + (static_cast<double>(i) / 10.0) * ppm_range;
         }
         std::ostringstream tick_text;
-        const int precision = (ppm_range < 3.0) ? 2 : 1;
         tick_text << std::fixed << std::setprecision(precision) << ppm_tick;
-        fl_draw(tick_text.str().c_str(), tick_x - 10, y() + h() - 12);
+        const int label_w = static_cast<int>(fl_width(tick_text.str().c_str()));
+        // Centre label on tick mark; clamp so it never overflows the widget edges.
+        int label_x = tick_x - label_w / 2;
+        label_x = std::max(x() + 2, std::min(label_x, x() + w() - label_w - 2));
+        fl_draw(tick_text.str().c_str(), label_x, y() + h() - 14);
     }
 
+    // Axis unit label: right-align inside the plot, on a separate baseline below ticks.
     fl_color(pal.axis_label);
     fl_font(FL_HELVETICA, axis_font_size);
-    if (reverse_axis) {
-        fl_draw("delta [ppm]", plot_x0 + plot_w - 72, y() + h() - 8);
-    } else {
-        fl_draw("wavelength [nm]", plot_x0 + plot_w - 100, y() + h() - 8);
-    }
+    const char *axis_label_text = reverse_axis ? "delta [ppm]" : "wavelength [nm]";
+    const int axis_label_w = static_cast<int>(fl_width(axis_label_text));
+    const int axis_label_x = std::max(x() + 2, plot_x0 + plot_w - axis_label_w - 2);
+    fl_draw(axis_label_text, axis_label_x, y() + h() - 4);
 
     fl_pop_clip();
 }
