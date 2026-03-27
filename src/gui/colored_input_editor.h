@@ -9,7 +9,8 @@ namespace easynmr {
 
 enum class InputSyntaxMode {
     SmilesLike,
-    XyzLike
+    XyzLike,
+    Plain
 };
 
 class ColoredInputEditor : public Fl_Text_Editor {

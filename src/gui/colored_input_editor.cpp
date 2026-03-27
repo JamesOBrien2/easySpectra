@@ -146,9 +146,14 @@ void ColoredInputEditor::refresh_styles() {
         std::free(raw);
     }
 
-    std::string styles = (syntax_mode_ == InputSyntaxMode::XyzLike)
-        ? build_xyz_styles(text)
-        : build_smiles_styles(text);
+    std::string styles;
+    if (syntax_mode_ == InputSyntaxMode::Plain) {
+        styles.assign(text.size(), 'A');
+    } else if (syntax_mode_ == InputSyntaxMode::XyzLike) {
+        styles = build_xyz_styles(text);
+    } else {
+        styles = build_smiles_styles(text);
+    }
 
     if (styles.size() != text.size()) {
         styles.assign(text.size(), 'A');
