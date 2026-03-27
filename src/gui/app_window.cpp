@@ -2054,6 +2054,10 @@ void AppWindow::on_preview_cb(Fl_Widget *widget, void *userdata) {
         self->preview_current_input(true);
         return;
     }
+    // In PubchemName mode don't fire auto-preview on every keystroke
+    if (self->input_mode_ == InputMode::PubchemName) {
+        return;
+    }
     self->schedule_preview(0.55, false);
 }
 
@@ -2159,7 +2163,14 @@ void AppWindow::refresh_input_syntax_mode() {
     if (input_box_ == nullptr) {
         return;
     }
-
+    if (input_mode_ == InputMode::PubchemName) {
+        input_box_->set_syntax_mode(InputSyntaxMode::Plain);
+        return;
+    }
+    if (input_mode_ == InputMode::Xyz) {
+        input_box_->set_syntax_mode(InputSyntaxMode::XyzLike);
+        return;
+    }
     const std::string raw_input = input_box_->value() != nullptr ? input_box_->value() : "";
     const InputFormat detected = detect_input_format_auto(raw_input);
     if (detected == InputFormat::Xyz) {
@@ -3732,7 +3743,7 @@ void AppWindow::cycle_input_mode() {
     case InputMode::Smiles:
         input_mode_ = InputMode::PubchemName;
         if (input_mode_btn_ != nullptr) input_mode_btn_->copy_label("Name");
-        if (input_box_ != nullptr) input_box_->set_syntax_mode(InputSyntaxMode::SmilesLike);
+        if (input_box_ != nullptr) input_box_->set_syntax_mode(InputSyntaxMode::Plain);
         break;
     case InputMode::PubchemName:
         input_mode_ = InputMode::Xyz;
@@ -3770,32 +3781,41 @@ void AppWindow::launch_pubchem_lookup(const std::string &name, bool then_queue) 
     pubchem_future_active_ = true;
     status_box_->label("Resolving compound name via PubChem...");
 
-    const std::string quoted = shell_quote(name);
-    pubchem_future_ = std::async(std::launch::async, [quoted]() -> std::string {
-        const std::string cmd =
-            "python3 -c \""
-            "import sys,urllib.request,urllib.parse,json; "
-            "n=sys.argv[1]; "
-            "try:\n"
-            "  r=urllib.request.urlopen('https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/'+urllib.parse.quote(n)+'/property/IsomericSMILES/JSON',timeout=8);\n"
-            "  d=json.loads(r.read());\n"
-            "  print(d['PropertyTable']['Properties'][0]['IsomericSMILES'])\n"
-            "except Exception as e:\n"
-            "  print('ERROR:'+str(e))\n"
-            "\" " + quoted;
-        FILE *pipe = popen(cmd.c_str(), "r");
+    // URL-encode the name for use in the PubChem REST URL
+    std::string encoded;
+    for (unsigned char c : name) {
+        if (std::isalnum(c) != 0 || c == '-' || c == '_' || c == '.' || c == '~') {
+            encoded += static_cast<char>(c);
+        } else {
+            char buf[4];
+            std::snprintf(buf, sizeof(buf), "%%%02X", c);
+            encoded += buf;
+        }
+    }
+    const std::string url =
+        "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/"
+        + encoded + "/property/IsomericSMILES/JSON";
+    const std::string curl_cmd = "curl -sf --max-time 10 " + shell_quote(url);
+
+    pubchem_future_ = std::async(std::launch::async, [curl_cmd]() -> std::string {
+        FILE *pipe = popen(curl_cmd.c_str(), "r");
         if (!pipe) return "ERROR:popen failed";
-        std::string result;
-        char buf[256];
+        std::string json;
+        char buf[4096];
         while (fgets(buf, sizeof(buf), pipe) != nullptr) {
-            result += buf;
+            json += buf;
         }
-        pclose(pipe);
-        // trim trailing newline
-        while (!result.empty() && (result.back() == '\n' || result.back() == '\r')) {
-            result.pop_back();
-        }
-        return result.empty() ? "ERROR:no output" : result;
+        const int ret = pclose(pipe);
+        if (ret != 0 || json.empty()) return "ERROR:compound not found";
+
+        // Extract IsomericSMILES from the JSON response
+        const std::string key = "\"IsomericSMILES\":\"";
+        const auto pos = json.find(key);
+        if (pos == std::string::npos) return "ERROR:SMILES not in response";
+        const auto start = pos + key.size();
+        const auto end = json.find('"', start);
+        if (end == std::string::npos) return "ERROR:malformed response";
+        return json.substr(start, end - start);
     });
 }
 
