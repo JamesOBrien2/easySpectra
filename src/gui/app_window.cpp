@@ -4,6 +4,7 @@
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Image_Surface.H>
 #include <FL/Fl_Menu_Item.H>
+#include <FL/fl_ask.H>
 #include <FL/Fl_Native_File_Chooser.H>
 #include <FL/Fl_PNG_Image.H>
 #include <FL/Fl_Pixmap.H>
@@ -1400,13 +1401,46 @@ std::string make_unique_overlay_key(
 }
 
 std::string experimental_import_failure_status(const ExperimentalSpectrumLoadResult &loaded) {
-    std::string hint = " Use a 2-column text/CSV file (x ppm, y intensity).";
+    std::string hint = " Use a 2-column text/CSV file (ppm, intensity).";
     if (loaded.detected_format == "bruker_raw_directory") {
         hint = " Select an exported ASCII/CSV file from TopSpin or MNova, not the raw Bruker folder.";
     } else if (loaded.detected_format == "mnova_project_file") {
         hint = " Export from MNova as text/CSV (x,y), then import that exported file.";
     }
-    return "Experimental import failed: " + loaded.error_message + hint;
+    return "Import failed: " + loaded.error_message + hint;
+}
+
+std::string experimental_import_failure_dialog(const ExperimentalSpectrumLoadResult &loaded) {
+    std::string msg = "Could not load experimental spectrum.\n\n";
+    msg += "Reason: " + loaded.error_message + "\n\n";
+
+    if (loaded.detected_format == "bruker_raw_directory") {
+        msg +=
+            "You selected a Bruker raw data folder.\n"
+            "Please export the spectrum first:\n"
+            "  TopSpin: File > Export > ASCII\n"
+            "  MNova:   File > Save As > Text (*.txt)\n"
+            "Then import the exported .txt or .csv file.";
+    } else if (loaded.detected_format == "mnova_project_file") {
+        msg +=
+            "You selected an MNova project file (.mnova / .mnv).\n"
+            "Please export the spectrum as text/CSV first:\n"
+            "  MNova: File > Save As > Text (*.txt)\n"
+            "Then import the exported file.";
+    } else {
+        msg +=
+            "Expected a plain 2-column text or CSV file with at least 8 data rows:\n\n"
+            "  ppm,intensity          (comma-separated)\n"
+            "  10.234  0.012          (space/tab-separated)\n"
+            "  10.234; 0.012          (semicolon-separated)\n\n"
+            "The first column must be chemical shift in ppm,\n"
+            "the second column must be intensity.\n"
+            "Comment lines starting with # are ignored.\n"
+            "A single header row is auto-detected and skipped.\n\n"
+            "Supported formats: Bruker/TopSpin ASCII export,\n"
+            "MNova text export, and generic 2-column CSV/TXT.";
+    }
+    return msg;
 }
 
 } // namespace
@@ -1596,6 +1630,7 @@ AppWindow::AppWindow(int w, int h, const char *title)
     queue_button_->color(ui(218, 225, 236));
     queue_button_->labelcolor(ui(63, 73, 86));
     queue_button_->labelfont(FL_HELVETICA_BOLD);
+    queue_button_->tooltip("Add current input to the job queue.\nShortcut: Ctrl+Enter / Cmd+Enter");
 
     start_button_ = new Fl_Button(panel_x + 116, panel_y + 406, 110, 30, "Run Pending");
     start_button_->callback(on_start_queue_cb, this);
@@ -1603,12 +1638,14 @@ AppWindow::AppWindow(int w, int h, const char *title)
     start_button_->color(ui(168, 205, 194));
     start_button_->labelcolor(ui(52, 66, 66));
     start_button_->labelfont(FL_HELVETICA_BOLD);
+    start_button_->tooltip("Run all pending jobs in the queue.\nShortcut: Ctrl+R / Cmd+R");
 
     cancel_button_ = new Fl_Button(panel_x + 232, panel_y + 406, 92, 30, "Cancel");
     cancel_button_->callback(on_cancel_cb, this);
     cancel_button_->box(FL_UP_BOX);
     cancel_button_->color(ui(223, 229, 238));
     cancel_button_->labelcolor(ui(88, 98, 112));
+    cancel_button_->tooltip("Cancel the running job queue.");
 
     auto *queue_title = new Fl_Box(panel_x + 10, panel_y + 444, panel_w - 20, 20, "Queue (A=current, B=compare)");
     queue_title->box(FL_NO_BOX);
@@ -1703,6 +1740,12 @@ AppWindow::AppWindow(int w, int h, const char *title)
     load_experimental_button_->color(ui(208, 221, 236));
     load_experimental_button_->labelcolor(ui(66, 78, 95));
     load_experimental_button_->labelsize(11);
+    load_experimental_button_->tooltip(
+        "Load an experimental NMR spectrum overlay.\n"
+        "Expected: 2-column text or CSV (ppm, intensity).\n"
+        "Supported: Bruker/TopSpin ASCII export, MNova text export,\n"
+        "or any generic tab/comma/space-separated file.\n"
+        "Shortcut: Ctrl+L / Cmd+L");
 
     clear_experimental_button_ = new Fl_Button(right_x + 414, right_y + 6, 84, 24, "Clear Exp");
     clear_experimental_button_->callback(on_clear_experimental_cb, this);
@@ -1753,6 +1796,7 @@ AppWindow::AppWindow(int w, int h, const char *title)
     export_spectrum_button_->color(ui(201, 216, 234));
     export_spectrum_button_->labelcolor(ui(60, 72, 89));
     export_spectrum_button_->labelsize(11);
+    export_spectrum_button_->tooltip("Export the current spectrum plot as PNG or PPM.\nShortcut: Ctrl+E / Cmd+E");
 
     experimental_choice_ = new Fl_Choice(experimental_x, right_y + 6, experimental_w, 24);
     experimental_choice_->box(FL_DOWN_BOX);
@@ -2965,7 +3009,10 @@ void AppWindow::on_load_experimental() {
 
     const auto loaded = load_experimental_spectrum(filename);
     if (!loaded.error_message.empty()) {
-        status_box_->copy_label(experimental_import_failure_status(loaded).c_str());
+        const std::string short_status = experimental_import_failure_status(loaded);
+        const std::string full_dialog = experimental_import_failure_dialog(loaded);
+        status_box_->copy_label(short_status.c_str());
+        fl_alert("%s", full_dialog.c_str());
         return;
     }
 

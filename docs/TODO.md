@@ -6,8 +6,8 @@ This is a practical working backlog for `easySpectra`.
 
 - [ ] Verify export-cropping behavior across different zoom ranges and window sizes, and make sure labels are never clipped.
 - [ ] Improve axis/tick font sizing for very small exported images.
-- [ ] Add keyboard shortcuts for common actions: queue, run pending, load experimental, export.
-- [ ] Add an in-app hint when experimental file format is invalid, including exact expected column format.
+- [x] Add keyboard shortcuts for common actions: queue, run pending, load experimental, export.
+- [x] Add an in-app hint when experimental file format is invalid, including exact expected column format.
 
 ## Near-Term (Comparison Quality)
 
