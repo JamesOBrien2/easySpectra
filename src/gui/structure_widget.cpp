@@ -145,6 +145,16 @@ void StructureWidget::clear_highlight() {
     redraw();
 }
 
+void StructureWidget::set_props_selected_atom(int atom_index) {
+    props_selected_atom_ = atom_index;
+    redraw();
+}
+
+void StructureWidget::clear_props_selected_atom() {
+    props_selected_atom_ = -1;
+    redraw();
+}
+
 void StructureWidget::set_atom_overlay(std::map<int, double> values, std::string mode) {
     atom_overlay_values_ = std::move(values);
     atom_overlay_mode_ = std::move(mode);
@@ -294,6 +304,8 @@ void StructureWidget::draw() {
                 end_r = 210; end_g = 50; end_b = 50;
             } else if (atom_overlay_mode_ == "gradient_blue") {
                 end_r = 50; end_g = 80; end_b = 200;
+            } else if (atom_overlay_mode_ == "gradient_zero") {
+                end_r = 140; end_g = 60; end_b = 200;   // purple/violet for f0
             } else {  // gradient_green (pKa)
                 end_r = 50; end_g = 160; end_b = 90;
             }
@@ -313,6 +325,14 @@ void StructureWidget::draw() {
         fl_color(is_selected ? selected_border_color_ : rgb(78, 86, 102));
         fl_line_style(FL_SOLID, is_selected ? 2 : 1);
         fl_arc(sx - radius, sy - radius, radius * 2, radius * 2, 0, 360);
+
+        // Properties panel cross-highlight: amber ring drawn on top.
+        if (props_selected_atom_ == atom.atom_index) {
+            fl_color(fl_rgb_color(230, 150, 0));
+            fl_line_style(FL_SOLID, 2);
+            fl_arc(sx - radius - 3, sy - radius - 3, (radius + 3) * 2, (radius + 3) * 2, 0, 360);
+            fl_line_style(FL_SOLID, 1);
+        }
     }
 
     fl_line_style(FL_SOLID, 0);

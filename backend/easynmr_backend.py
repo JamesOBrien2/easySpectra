@@ -2041,7 +2041,13 @@ def run_xtb_sp(
         else:
             write_conf_xyz(mol, conf_id, xyz_path, f"conf-{conf_id}")
 
-        cmd = [xtb_bin, str(xyz_path), "--gfn2", "--pop", "--chrg", str(charge)]
+        # For open-shell calculations (odd total electrons), xTB needs --uhf 1.
+        # This applies whenever the N+1 or N-1 charge makes an even-electron molecule
+        # into an odd-electron (doublet) system.
+        total_electrons = sum(atom.GetAtomicNum() for atom in mol.GetAtoms()) - charge
+        n_unpaired = total_electrons % 2  # 1 for doublet, 0 for closed-shell singlet
+        cmd = [xtb_bin, str(xyz_path), "--gfn2", "--pop",
+               "--chrg", str(charge), "--uhf", str(n_unpaired)]
         if solvent:
             cmd.extend(["--alpb", solvent])
 
@@ -2314,7 +2320,7 @@ def predict_molecular_properties(
             props["warnings"].append(f"Fukui index computation failed: {exc}")
     else:
         props["warnings"].append(
-            "xTB SP (N\u00b11 electrons) failed — Fukui indices not available."
+            "xTB SP (N±1 electrons) failed — Fukui indices not available."
         )
 
     return props
@@ -2322,7 +2328,7 @@ def predict_molecular_properties(
 
 def write_properties_json(path: Path, props: dict) -> None:
     """Write the properties dict to a structured JSON file."""
-    path.write_text(json.dumps(props, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(props, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def write_spectrum_csv(path: Path, data: Sequence[Tuple[float, float]]) -> None:

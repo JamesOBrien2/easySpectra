@@ -2029,6 +2029,11 @@ AppWindow::AppWindow(int w, int h, const char *title)
         }
     });
 
+    // Properties atom browser → structure: show amber ring on selected atom.
+    properties_widget_->set_on_atom_selected([this](int atom_index) {
+        if (structure_widget_) structure_widget_->set_props_selected_atom(atom_index);
+    });
+
     end();
     refresh_example_choice();
     refresh_experimental_choice();
@@ -4051,6 +4056,11 @@ void AppWindow::on_structure_atom_picked(int atom_index, const std::vector<int> 
         }
     }
 
+    // Cross-highlight properties panel atom browser when properties view is active.
+    if (properties_view_active_ && properties_widget_) {
+        properties_widget_->select_atom_row(atom_index);
+    }
+
     std::ostringstream status;
     status << "Selected atom " << atom_index;
     if (!nucleus_targets.empty()) {
@@ -4791,8 +4801,10 @@ void AppWindow::show_spectra_view() {
     if (clear_experimental_button_) clear_experimental_button_->show();
     if (export_spectrum_button_)   export_spectrum_button_->show();
     if (properties_widget_)        properties_widget_->hide();
-    // Clear any active overlay from structure when returning to spectra
+    // Clear any active overlay/selection from structure when returning to spectra
     if (structure_widget_)         structure_widget_->clear_atom_overlay();
+    if (structure_widget_)         structure_widget_->clear_props_selected_atom();
+    if (properties_widget_)        properties_widget_->select_atom_row(-1);
 
     if (view_spectra_btn_) {
         view_spectra_btn_->color(fl_rgb_color(70, 110, 170));
