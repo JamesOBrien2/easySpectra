@@ -1198,6 +1198,7 @@ std::map<std::string, SpectralProductFiles> spectral_products_for_job(const Queu
     const std::string fallback_nucleus =
         (job.config.workflow_kind == WorkflowKind::Cd) ? "CD"
         : (job.config.workflow_kind == WorkflowKind::Ir) ? "IR"
+        : (job.config.workflow_kind == WorkflowKind::UvVis) ? "UV-Vis"
         : (job.config.workflow_kind == WorkflowKind::Properties) ? ""
         : normalize_nucleus_label(job.config.nucleus);
     SpectralProductFiles fallback;
@@ -1395,6 +1396,9 @@ std::string workflow_display_name(WorkflowKind kind) {
     }
     if (kind == WorkflowKind::Ir) {
         return "IR";
+    }
+    if (kind == WorkflowKind::UvVis) {
+        return "UV-Vis";
     }
     if (kind == WorkflowKind::Compare) {
         return "COMPARE";
@@ -1605,6 +1609,7 @@ AppWindow::AppWindow(int w, int h, const char *title)
     workflow_choice_->add("nmr");
     workflow_choice_->add("cd");
     workflow_choice_->add("ir");
+    workflow_choice_->add("uvvis");
     workflow_choice_->add("properties");
     workflow_choice_->value(0);
     workflow_choice_->box(FL_DOWN_BOX);
@@ -4874,8 +4879,10 @@ void AppWindow::run_worker_loop() {
                         jobs_[next_index].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> CD bands";
                     } else if (jobs_[next_index].config.workflow_kind == WorkflowKind::Ir) {
                         jobs_[next_index].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> xTB Hessian -> IR spectrum";
+                    } else if (jobs_[next_index].config.workflow_kind == WorkflowKind::UvVis) {
+                        jobs_[next_index].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> xTB sTDA -> UV-Vis spectrum";
                     } else if (jobs_[next_index].config.workflow_kind == WorkflowKind::All) {
-                        jobs_[next_index].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> NMR + CD + IR products";
+                        jobs_[next_index].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> NMR + CD + IR + UV-Vis products";
                     } else if (jobs_[next_index].config.workflow_kind == WorkflowKind::Compare) {
                         jobs_[next_index].message = "Reactant + product conformers -> NMR prediction -> spectral comparison";
                     } else if (jobs_[next_index].config.workflow_kind == WorkflowKind::Properties) {
@@ -4900,8 +4907,10 @@ void AppWindow::run_worker_loop() {
                             jobs_[i].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> CD bands";
                         } else if (jobs_[i].config.workflow_kind == WorkflowKind::Ir) {
                             jobs_[i].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> xTB Hessian -> IR spectrum";
+                        } else if (jobs_[i].config.workflow_kind == WorkflowKind::UvVis) {
+                            jobs_[i].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> xTB sTDA -> UV-Vis spectrum";
                         } else if (jobs_[i].config.workflow_kind == WorkflowKind::All) {
-                            jobs_[i].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> NMR + CD + IR products";
+                            jobs_[i].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> NMR + CD + IR + UV-Vis products";
                         } else if (jobs_[i].config.workflow_kind == WorkflowKind::Compare) {
                             jobs_[i].message = "Reactant + product conformers -> NMR prediction -> spectral comparison";
                         } else if (jobs_[i].config.workflow_kind == WorkflowKind::Properties) {

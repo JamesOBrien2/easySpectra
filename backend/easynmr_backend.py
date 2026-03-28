@@ -32,6 +32,8 @@ MAX_PARALLEL_XTB = 4
 # GFN2-xTB harmonic frequency scaling factor (Merz et al., JCTC 2021)
 IR_SCALE_FACTOR_GFN2: float = 0.9740
 IR_MAX_HESS_CONFS: int = 10
+UVVIS_MAX_STDA_CONFS: int = 10
+UVVIS_BROADENING_NM: float = 15.0   # Gaussian FWHM in nm
 
 SOLVENT_ALIASES = {
     "cdcl3": "chcl3",
@@ -1541,6 +1543,331 @@ def write_ir_peaks_csv(
             writer.writerow([idx, f"{scaled:.1f}", f"{scaled:.1f}", label, "0.00", f"{rel:.4f}", "", ""])
 
 
+# ── UV-Vis Prediction ─────────────────────────────────────────────────────────
+
+def _parse_xtb_stda_stdout(stdout: str) -> List[Tuple[float, float]]:
+    """Extract excited-state energies and oscillator strengths from xTB --stda stdout.
+
+    Returns list of (wavelength_nm, oscillator_strength) for allowed transitions
+    (f > 1e-5) with wavelength in 150–900 nm range.
+    """
+    sticks: List[Tuple[float, float]] = []
+
+    # Primary pattern: tabular block with state, Erel/eV, lambda/nm, f columns
+    # xTB sTDA prints:
+    #   state    Erel/eV    lambda/nm      f        ...
+    #       1       2.4543     505.49     0.1234   ...
+    table_re = re.compile(
+        r"^\s*(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+(?:[eE][+-]?\d+)?)",
+        re.MULTILINE,
+    )
+    in_block = False
+    for line in stdout.splitlines():
+        if re.search(r"lambda.*nm|wavelength.*nm|excited\s+state|EXCITED STATE", line, re.IGNORECASE):
+            in_block = True
+            continue
+        if in_block:
+            m = table_re.match(line)
+            if m:
+                try:
+                    # columns: state, Erel_eV, lambda_nm, f
+                    lambda_nm = float(m.group(3))
+                    f_osc = float(m.group(4))
+                    if 150.0 <= lambda_nm <= 900.0 and f_osc > 1e-5:
+                        sticks.append((lambda_nm, f_osc))
+                except ValueError:
+                    pass
+            elif sticks:
+                # Stop at blank/separator line after at least one state found
+                stripped = line.strip()
+                if not stripped or stripped.startswith("---") or stripped.startswith("==="):
+                    in_block = False
+
+    if sticks:
+        return sticks
+
+    # Fallback: scan for pattern "N  eV_value eV  (nm_value nm)"
+    ev_nm_re = re.compile(r"([\d.]+)\s+eV\s+\(?\s*([\d.]+)\s+nm", re.IGNORECASE)
+    for line in stdout.splitlines():
+        m = ev_nm_re.search(line)
+        if m:
+            try:
+                lambda_nm = float(m.group(2))
+                # Try to find oscillator strength on same line
+                f_m = re.search(r"f\s*=\s*([\d.eE+\-]+)", line, re.IGNORECASE)
+                f_osc = float(f_m.group(1)) if f_m else 0.05
+                if 150.0 <= lambda_nm <= 900.0 and f_osc > 1e-5:
+                    sticks.append((lambda_nm, f_osc))
+            except ValueError:
+                pass
+
+    if sticks:
+        return sticks
+
+    # Last resort: look for any line containing an energy in eV and convert
+    eV_re = re.compile(r"^\s*\d+\s+([\d.]+)\s+eV", re.MULTILINE)
+    for m in eV_re.finditer(stdout):
+        try:
+            ev = float(m.group(1))
+            if 1.0 <= ev <= 10.0:
+                lambda_nm = 1240.0 / ev
+                if 150.0 <= lambda_nm <= 900.0:
+                    sticks.append((lambda_nm, 0.05))
+        except ValueError:
+            pass
+
+    return sticks
+
+
+def run_xtb_stda(
+    xtb_bin: str,
+    mol: Chem.Mol,
+    conf_id: int,
+    solvent: str,
+    output_dir: Path,
+    timeout_s: int,
+) -> List[Tuple[float, float]]:
+    """Run xTB GFN2 --stda on one conformer.
+
+    Returns list of (wavelength_nm, oscillator_strength) for allowed transitions.
+    Returns [] on failure or timeout.
+    """
+    archive_dir = output_dir / f"xtb_stda_conf_{conf_id}"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = Path(tempfile.mkdtemp(prefix=f"easynmr_xtb_stda_{conf_id}_"))
+    log_path = archive_dir / "xtb_stda.log"
+    stdout = ""
+    stderr = ""
+    try:
+        xyz_path = run_dir / "input.xyz"
+        # Prefer previously optimised geometry if available
+        archived_opt = output_dir.parent / f"xtb_conf_{conf_id}" / "xtbopt.xyz"
+        if archived_opt.exists():
+            shutil.copy2(archived_opt, xyz_path)
+        else:
+            write_conf_xyz(mol, conf_id, xyz_path, f"conf-{conf_id}")
+
+        cmd = [xtb_bin, str(xyz_path), "--gfn2", "--stda"]
+        if solvent:
+            cmd.extend(["--alpb", solvent])
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=run_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+        except Exception:
+            return []
+
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:
+                proc.kill()
+            stdout, stderr = proc.communicate()
+            log_path.write_text((stdout or "") + "\n" + (stderr or ""), encoding="utf-8")
+            return []
+
+        log_path.write_text((stdout or "") + "\n" + (stderr or ""), encoding="utf-8")
+        if proc.returncode != 0:
+            return []
+
+        return _parse_xtb_stda_stdout(stdout)
+    finally:
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+
+def _uvvis_heuristic_bands(mol: Chem.Mol) -> List[Tuple[float, float, str]]:
+    """Return heuristic UV-Vis bands from SMARTS chromophore matching.
+
+    Returns list of (wavelength_nm, relative_intensity, label).
+    More specific patterns are checked first; the most specific match wins for
+    overlapping chromophores (de-duplicated by match atom sets).
+    """
+    # (smarts, wavelength_nm, rel_intensity, label)
+    # More specific patterns listed first so they shadow generic ones
+    table: List[Tuple[str, float, float, str]] = [
+        # Extended / fused aromatic
+        ("c1ccc2c(c1)ccc3ccccc23",      340.0, 0.90, "\u03c0\u2192\u03c0* (anthracene)"),
+        ("c1ccc2ccccc2c1",              315.0, 0.85, "\u03c0\u2192\u03c0* (naph)"),
+        # Enone / dienone
+        ("[CX3](=O)[CX3]=[CX3][CX3]=[CX3]", 350.0, 0.80, "\u03c0\u2192\u03c0* (cross-conj)"),
+        ("[CX3](=O)[CX3]=[CX3]",        328.0, 0.75, "\u03c0\u2192\u03c0* (enone)"),
+        # Nitro
+        ("[NX3](=O)=O",                 330.0, 0.60, "n\u2192\u03c0* (NO\u2082)"),
+        # Thione
+        ("[CX3](=S)",                   320.0, 0.40, "n\u2192\u03c0* (C=S)"),
+        # Diene
+        ("[CX3]=[CX3]-[CX3]=[CX3]",    217.0, 0.80, "\u03c0\u2192\u03c0* (diene)"),
+        # Aldehyde / ketone n→π*
+        ("[CX3H1](=O)",                 293.0, 0.30, "n\u2192\u03c0* (CHO)"),
+        ("[CX3](=O)[#6]",               280.0, 0.20, "n\u2192\u03c0* (C=O)"),
+        # Substituted benzene (check before unsubstituted)
+        ("c1ccc(-[!#1])cc1",            272.0, 0.65, "\u03c0\u2192\u03c0* (Ar-sub)"),
+        # Unsubstituted benzene
+        ("c1ccccc1",                    254.0, 0.50, "\u03c0\u2192\u03c0* (ArH)"),
+        # Carboxylic acid / ester / amide
+        ("[CX3](=O)[OX2H1]",            210.0, 0.40, "n\u2192\u03c0* (COOH)"),
+        ("[CX3](=O)[OX2][#6]",          210.0, 0.35, "n\u2192\u03c0* (ester)"),
+        ("[CX3](=O)[NX3]",              220.0, 0.45, "n\u2192\u03c0* (amide)"),
+        # Isolated alkene
+        ("[CX3]=[CX3]",                 185.0, 0.30, "\u03c0\u2192\u03c0* (C=C)"),
+    ]
+
+    bands: List[Tuple[float, float, str]] = []
+    seen_atoms: set = set()
+
+    for smarts, wl, rel_int, label in table:
+        pattern = Chem.MolFromSmarts(smarts)
+        if pattern is None:
+            continue
+        for match in mol.GetSubstructMatches(pattern):
+            match_set = frozenset(match)
+            # Skip if the majority of these atoms were already covered
+            if len(match_set & seen_atoms) >= len(match_set) // 2:
+                continue
+            seen_atoms.update(match_set)
+            bands.append((wl, rel_int, label))
+
+    return bands
+
+
+def simulate_uvvis_spectrum(
+    sticks: Sequence[Tuple[float, float]],
+    fwhm_nm: float = UVVIS_BROADENING_NM,
+    n_points: int = 1500,
+) -> List[Tuple[float, float]]:
+    """Broaden a UV-Vis stick spectrum into a continuous trace (Gaussian).
+
+    Returns list of (wavelength_nm, intensity) covering 200→800 nm,
+    normalised to a max intensity of 1.0.
+    """
+    wl_axis = np.linspace(200.0, 800.0, n_points)
+    intensity = np.zeros(n_points)
+    sigma = fwhm_nm / (2.0 * math.sqrt(2.0 * math.log(2.0)))
+    for wl, f_osc in sticks:
+        diff = wl_axis - wl
+        intensity += f_osc * np.exp(-0.5 * (diff / sigma) ** 2)
+    max_int = float(np.max(intensity))
+    if max_int > 0.0:
+        intensity /= max_int
+    return list(zip(wl_axis.tolist(), intensity.tolist()))
+
+
+def predict_uvvis_spectrum(
+    mol: Chem.Mol,
+    selected_confs: Sequence,
+    weights: Sequence[float],
+    solvent: str,
+    output_dir: Path,
+    warnings: List[str],
+    progress_path: Optional[Path],
+) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float, str]], bool]:
+    """Predict UV-Vis absorption spectrum via xTB --stda with heuristic fallback.
+
+    Returns:
+        (broadened_spectrum, labeled_peaks, used_heuristic)
+        labeled_peaks: list of (wavelength_nm, oscillator_strength, label)
+    """
+    xtb_bin_env = os.environ.get("EASYSPECTRA_XTB", "xtb")
+    xtb_bin = None if xtb_bin_env == "__none__" else shutil.which(xtb_bin_env)
+    timeout_s = int(os.environ.get("EASYSPECTRA_XTB_TIMEOUT", "25"))
+
+    used_heuristic = False
+    combined_sticks: List[Tuple[float, float]] = []
+
+    if xtb_bin:
+        n_confs = min(len(selected_confs), UVVIS_MAX_STDA_CONFS)
+        confs_subset = selected_confs[:n_confs]
+        weights_subset = list(weights[:n_confs])
+        weight_sum = sum(weights_subset)
+        if weight_sum > 0:
+            weights_subset = [w / weight_sum for w in weights_subset]
+
+        for conf_result, w in zip(confs_subset, weights_subset):
+            if progress_path:
+                write_progress(progress_path, "uvvis_stda",
+                               f"xTB sTDA: conformer {conf_result.conf_id}", 0.88)
+            sticks = run_xtb_stda(xtb_bin, mol, conf_result.conf_id, solvent, output_dir, timeout_s)
+            for wl, f_osc in sticks:
+                combined_sticks.append((wl, f_osc * w))
+
+    if not combined_sticks:
+        if xtb_bin:
+            warnings.append(
+                "UV-Vis: xTB sTDA produced no excitations — using chromophore heuristic."
+            )
+        else:
+            warnings.append(
+                "UV-Vis: xTB not available — using chromophore heuristic (approximate)."
+            )
+        raw_bands = _uvvis_heuristic_bands(mol)
+        if not raw_bands:
+            # Featureless molecule — add a generic far-UV band
+            raw_bands = [(190.0, 0.3, "\u03c3\u2192\u03c3* (generic)")]
+        combined_sticks = [(wl, rel_int) for wl, rel_int, _ in raw_bands]
+        used_heuristic = True
+
+    if progress_path:
+        write_progress(progress_path, "uvvis_spectrum_simulation",
+                       "Simulating UV-Vis spectrum", 0.93)
+
+    fwhm = UVVIS_BROADENING_NM if not used_heuristic else 25.0
+    spectrum = simulate_uvvis_spectrum(combined_sticks, fwhm_nm=fwhm)
+
+    # Build labeled peaks: top N unique bands by intensity
+    # For xTB sticks, group nearby transitions (within 20 nm)
+    peaks_by_wl: dict = {}
+    for wl, f in combined_sticks:
+        bucket = round(wl / 10.0) * 10
+        if bucket not in peaks_by_wl or f > peaks_by_wl[bucket][1]:
+            peaks_by_wl[bucket] = (wl, f, "")
+
+    labeled_peaks: List[Tuple[float, float, str]] = []
+    if used_heuristic:
+        raw_bands_sorted = sorted(_uvvis_heuristic_bands(mol), key=lambda x: x[1], reverse=True)
+        for wl, rel_int, label in raw_bands_sorted[:20]:
+            labeled_peaks.append((wl, rel_int, label))
+    else:
+        for wl, f, label in sorted(peaks_by_wl.values(), key=lambda x: x[1], reverse=True)[:20]:
+            labeled_peaks.append((wl, f, "S\u2099"))
+
+    return spectrum, labeled_peaks, used_heuristic
+
+
+def write_uvvis_spectrum_csv(path: Path, data: Sequence[Tuple[float, float]]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["wavelength", "intensity"])
+        for wl, intensity in data:
+            writer.writerow([f"{wl:.2f}", f"{intensity:.8f}"])
+
+
+def write_uvvis_peaks_csv(
+    path: Path,
+    labeled_peaks: Sequence[Tuple[float, float, str]],
+    top_n: int = 20,
+) -> None:
+    """Write UV-Vis peaks in the 8-column format the C++ peak browser expects."""
+    sorted_peaks = sorted(labeled_peaks, key=lambda x: x[1], reverse=True)[:top_n]
+    sorted_peaks.sort(key=lambda x: x[0])  # display short→long wavelength
+    max_f = max((f for _, f, _ in sorted_peaks), default=1.0) or 1.0
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["peak_id", "wavelength_nm", "wavelength_nm", "label",
+                         "f_osc", "rel_intensity", "assignment", "atom_indices"])
+        for idx, (wl, f_osc, label) in enumerate(sorted_peaks, start=1):
+            rel = f_osc / max_f
+            writer.writerow([idx, f"{wl:.1f}", f"{wl:.1f}", label,
+                             f"{f_osc:.4f}", f"{rel:.4f}", "", ""])
+
+
 # ── Molecular Properties ──────────────────────────────────────────────────────
 
 # Vacuum-to-NHE shift (Trasatti convention, eV)
@@ -2355,10 +2682,10 @@ def main() -> int:
     progress_path = Path(str(request.get("progress_json", output_dir / "progress.json")))
     write_progress(progress_path, "initializing", "Starting easySpectra workflow", 0.01)
 
-    if workflow_kind not in {"all", "nmr", "cd", "ir", "compare", "properties"}:
+    if workflow_kind not in {"all", "nmr", "cd", "ir", "uvvis", "compare", "properties"}:
         message = (
             f"Unsupported workflow kind '{workflow_kind}'. "
-            "Currently available workflows: all, nmr, cd, ir, compare, properties."
+            "Currently available workflows: all, nmr, cd, ir, uvvis, compare, properties."
         )
         write_progress(progress_path, "failed", message, 1.0)
         response = {
@@ -2600,6 +2927,7 @@ def main() -> int:
     run_nmr = workflow_kind in {"all", "nmr"}
     run_cd = workflow_kind in {"all", "cd"}
     run_ir = workflow_kind in {"all", "ir"}
+    run_uvvis = workflow_kind in {"all", "uvvis"}
     run_properties = workflow_kind in {"all", "properties"}
 
     target_nuclei: List[str] = []
@@ -2698,7 +3026,11 @@ def main() -> int:
     spectra_rows: List[Tuple[str, Path, Path, Path]] = []
     output_by_label: Dict[str, Dict[str, Path]] = {}
     produced_products: List[str] = []
-    default_label = "CD" if run_cd and not run_nmr and not run_ir else "1H"
+    default_label = (
+        "CD" if run_cd and not run_nmr and not run_ir and not run_uvvis
+        else "UV-Vis" if run_uvvis and not run_nmr and not run_cd and not run_ir
+        else "1H"
+    )
 
     if run_nmr:
         total_targets = max(1, len(target_nuclei))
@@ -2831,6 +3163,45 @@ def main() -> int:
         if not run_nmr and not run_cd or default_label not in output_by_label:
             default_label = "IR"
 
+    # ── UV-Vis workflow ───────────────────────────────────────────────────────
+    if run_uvvis:
+        write_progress(
+            progress_path,
+            "uvvis_stda",
+            "Running xTB sTDA for UV-Vis prediction (Boltzmann-weighted conformers)",
+            0.84 if not run_nmr and not run_cd and not run_ir else 0.93,
+        )
+        uvvis_spectrum, uvvis_labeled_peaks, uvvis_used_heuristic = predict_uvvis_spectrum(
+            mol,
+            selected_confs,
+            conf_weights,
+            solvent=solvent,
+            output_dir=output_dir,
+            warnings=warnings,
+            progress_path=progress_path,
+        )
+        write_progress(progress_path, "uvvis_spectrum_simulation", "Simulating UV-Vis spectrum", 0.94 if not run_nmr and not run_cd and not run_ir else 0.96)
+
+        spectrum_csv_uvvis = output_dir / "spectrum_uvvis.csv"
+        peaks_csv_uvvis = output_dir / "peaks_uvvis.csv"
+        assignments_json_uvvis = output_dir / "assignments_uvvis.json"
+        assignments_csv_uvvis = output_dir / "assignments_uvvis.csv"
+
+        write_uvvis_spectrum_csv(spectrum_csv_uvvis, uvvis_spectrum)
+        write_uvvis_peaks_csv(peaks_csv_uvvis, uvvis_labeled_peaks)
+        write_empty_assignments(assignments_json_uvvis, assignments_csv_uvvis, "UV-Vis")
+
+        spectra_rows.append(("UV-Vis", spectrum_csv_uvvis, peaks_csv_uvvis, assignments_csv_uvvis))
+        output_by_label["UV-Vis"] = {
+            "spectrum_csv": spectrum_csv_uvvis,
+            "peaks_csv": peaks_csv_uvvis,
+            "assignments_json": assignments_json_uvvis,
+            "assignments_csv": assignments_csv_uvvis,
+        }
+        produced_products.append("UV-Vis")
+        if not run_nmr and not run_cd and not run_ir or default_label not in output_by_label:
+            default_label = "UV-Vis"
+
     # ── Properties workflow ───────────────────────────────────────────────────
     properties_json_path: Optional[Path] = None
     if run_properties:
@@ -2915,6 +3286,20 @@ def main() -> int:
             "nucleus": default_label,
             "nuclei": [NUCLEUS_LABEL.get(n, n.upper()) for n in target_nuclei],
             "products": [NUCLEUS_LABEL.get(n, n.upper()) for n in target_nuclei],
+        }
+    elif workflow_kind == "ir":
+        pipeline_summary = {
+            "workflow_kind": workflow_kind,
+            "geometry": "ETKDG + xTB(opt) with MMFF fallback",
+            "simulation_mode": "xTB Hessian / force-field heuristic",
+            "products": ["IR"],
+        }
+    elif workflow_kind == "uvvis":
+        pipeline_summary = {
+            "workflow_kind": workflow_kind,
+            "geometry": "ETKDG + xTB(opt) with MMFF fallback",
+            "simulation_mode": "xTB sTDA / chromophore heuristic",
+            "products": ["UV-Vis"],
         }
     else:
         nmr_products = [label for label in produced_products if label in {"1H", "13C", "19F", "31P"}]

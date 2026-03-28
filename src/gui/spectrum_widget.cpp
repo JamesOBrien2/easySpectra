@@ -38,6 +38,12 @@ bool is_ir_label(const std::string &label) {
            || lower.find("wavenumber") != std::string::npos;
 }
 
+bool is_uvvis_label(const std::string &label) {
+    const std::string lower = to_lower_copy(label);
+    return lower.find("uv") != std::string::npos || lower.find("ultraviolet") != std::string::npos
+           || lower.find("visible") != std::string::npos;
+}
+
 struct SpectrumPalette {
     Fl_Color panel_bg = rgb(250, 252, 255);
     Fl_Color panel_border = rgb(221, 229, 240);
@@ -440,7 +446,7 @@ void SpectrumWidget::draw() {
     const auto ppm_bounds = active_ppm_bounds();
     const double min_ppm = ppm_bounds.first;
     const double max_ppm = ppm_bounds.second;
-    const bool reverse_axis = !is_cd_label(nucleus_label_);
+    const bool reverse_axis = !(is_cd_label(nucleus_label_) || is_uvvis_label(nucleus_label_));
     bool has_calc_intensity = false;
     double min_intensity = 0.0;
     double max_intensity = 1.0;
