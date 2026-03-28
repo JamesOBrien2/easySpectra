@@ -13,6 +13,7 @@ add_library(easynmr_core
     src/core/pipeline.cpp
     src/core/spectral_product.cpp
     src/core/spectrum.cpp
+    src/core/properties.cpp
 )
 
 target_include_directories(easynmr_core
@@ -45,6 +46,7 @@ if(EASYSPECTRA_BUILD_GUI)
             src/gui/spectrum_widget.cpp
             src/gui/structure_widget.cpp
             src/gui/workflow_progress_widget.cpp
+            src/gui/properties_widget.cpp
         )
         target_include_directories(easynmr-gui PRIVATE ${FLTK_INCLUDE_DIRS} ${FLTK_INCLUDE_DIR})
         if(TARGET FLTK::FLTK)

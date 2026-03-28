@@ -3,6 +3,7 @@
 #include <FL/Fl_Widget.H>
 
 #include <functional>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -38,6 +39,12 @@ class StructureWidget : public Fl_Widget {
     void clear_highlight();
     void set_on_atom_selected(std::function<void(int, const std::vector<int> &)> callback);
 
+    // Atom overlay for property visualisation.
+    // values: map from 1-based atom_index → normalised [0,1] value.
+    // mode: "gradient_red" (f+), "gradient_blue" (f-), "gradient_green" (pKa), "none".
+    void set_atom_overlay(std::map<int, double> values, std::string mode);
+    void clear_atom_overlay();
+
     void draw() override;
     int handle(int event) override;
 
@@ -54,6 +61,9 @@ class StructureWidget : public Fl_Widget {
     Fl_Color selected_fill_color_ = FL_WHITE;
     Fl_Color selected_border_color_ = FL_DARK_GREEN;
     Fl_Color attached_fill_color_ = FL_LIGHT2;
+    // Atom overlay state
+    std::map<int, double> atom_overlay_values_;  // 1-based atom index → normalised value [0,1]
+    std::string atom_overlay_mode_ = "none";
 };
 
 } // namespace easynmr

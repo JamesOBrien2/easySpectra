@@ -257,6 +257,7 @@ JobOutputs Pipeline::run_impl(
     outputs.structure_product_svg = extract_string_field(json, "structure_product_svg");
     outputs.structure_atoms_product_csv = extract_string_field(json, "structure_atoms_product_csv");
     outputs.structure_bonds_product_csv = extract_string_field(json, "structure_bonds_product_csv");
+    outputs.properties_json = extract_string_field(json, "properties_json");
     outputs.warnings = extract_warnings(json);
 
     if (outputs.status.empty()) {

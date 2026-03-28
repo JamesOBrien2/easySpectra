@@ -1541,6 +1541,463 @@ def write_ir_peaks_csv(
             writer.writerow([idx, f"{scaled:.1f}", f"{scaled:.1f}", label, "0.00", f"{rel:.4f}", "", ""])
 
 
+# ── Molecular Properties ──────────────────────────────────────────────────────
+
+# Vacuum-to-NHE shift (Trasatti convention, eV)
+_VACUUM_TO_NHE_EV: float = 4.44
+# Fc/Fc+ vs NHE (V), used for conversion to ferrocene reference
+_FC_VS_NHE_V: float = 0.40
+
+
+def compute_rdkit_descriptors(mol: Chem.Mol) -> dict:
+    """Return a dict of common RDKit molecular descriptors."""
+    from rdkit.Chem import Descriptors, Crippen, rdMolDescriptors
+    mol_no_h = Chem.RemoveHs(mol)
+    mw = Descriptors.MolWt(mol_no_h)
+    exact_mw = Descriptors.ExactMolWt(mol_no_h)
+    formula = rdMolDescriptors.CalcMolFormula(mol_no_h)
+    logp = Crippen.MolLogP(mol_no_h)
+    tpsa = rdMolDescriptors.CalcTPSA(mol_no_h)
+    hbd = rdMolDescriptors.CalcNumHBD(mol_no_h)
+    hba = rdMolDescriptors.CalcNumHBA(mol_no_h)
+    rotbonds = rdMolDescriptors.CalcNumRotatableBonds(mol_no_h)
+    ar_rings = rdMolDescriptors.CalcNumAromaticRings(mol_no_h)
+    heavy_atom_count = mol_no_h.GetNumAtoms()
+    formal_charge = Chem.GetFormalCharge(mol_no_h)
+    return {
+        "formula": formula,
+        "mw": round(mw, 3),
+        "exact_mw": round(exact_mw, 5),
+        "logp": round(logp, 3),
+        "tpsa": round(tpsa, 2),
+        "hbd": hbd,
+        "hba": hba,
+        "rotbonds": rotbonds,
+        "ar_rings": ar_rings,
+        "heavy_atom_count": heavy_atom_count,
+        "formal_charge": formal_charge,
+    }
+
+
+def _parse_xtb_cm5_charges(stdout: str, n_atoms: int) -> List[float]:
+    """Extract per-atom CM5 charges from xTB stdout."""
+    charges: List[float] = []
+    # xTB prints a block like:
+    #  #   Z          covCN         q      C6AA      α(0)
+    #  1   6 C        3.996    -0.069   ...
+    # OR a "Mulliken/CM5 charges" block. Try the tabular block first.
+    # Pattern: lines with   <idx>   <Z>   <sym>  ...  <charge>  ...
+    block_re = re.compile(
+        r"^\s*(\d+)\s+\d+\s+\w+\s+[\d.]+\s+([-+]?\d+\.\d+)", re.MULTILINE
+    )
+    # Try the "#   Z  covCN  q" table (charge is 4th numeric column)
+    header_found = False
+    in_table = False
+    table_charges: List[float] = []
+    for line in stdout.splitlines():
+        if re.search(r"#\s+Z\s+covCN\s+q", line):
+            header_found = True
+            in_table = True
+            table_charges = []
+            continue
+        if in_table:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("---"):
+                in_table = False
+                continue
+            parts = stripped.split()
+            if len(parts) >= 4:
+                try:
+                    table_charges.append(float(parts[3]))
+                except ValueError:
+                    in_table = False
+    if header_found and len(table_charges) == n_atoms:
+        return table_charges
+
+    # Fallback: "Mulliken/CM5 charges" block
+    in_cm5 = False
+    cm5_charges: List[float] = []
+    for line in stdout.splitlines():
+        if re.search(r"Mulliken/CM5 charges", line, re.IGNORECASE):
+            in_cm5 = True
+            cm5_charges = []
+            continue
+        if in_cm5:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("---"):
+                in_cm5 = False
+                continue
+            parts = stripped.split()
+            # format:  idx  sym  mulliken  cm5
+            if len(parts) >= 4:
+                try:
+                    cm5_charges.append(float(parts[3]))
+                except ValueError:
+                    in_cm5 = False
+    if len(cm5_charges) == n_atoms:
+        return cm5_charges
+
+    # Last resort: generic regex scan
+    matches = block_re.findall(stdout)
+    if len(matches) == n_atoms:
+        return [float(q) for _, q in matches]
+    return []
+
+
+def _parse_xtb_homo_lumo(stdout: str) -> Tuple[float, float, float]:
+    """Return (homo_ev, lumo_ev, gap_ev) from xTB stdout. Returns (0, 0, 0) on failure."""
+    gap_m = re.search(r"HOMO-LUMO gap\s*[:\s]+([\d.]+)\s*eV", stdout, re.IGNORECASE)
+    # xTB orbital table format:  <idx>  <occ>  <energy_Eh>  <energy_eV> (HOMO)
+    homo_m = re.search(r"([-\d.]+)\s+\(HOMO\)", stdout)
+    lumo_m = re.search(r"([-\d.]+)\s+\(LUMO\)", stdout)
+    # Fallback patterns
+    if not homo_m:
+        homo_m = re.search(r"HOMO\s+([-\d.]+)\s+eV", stdout)
+    if not lumo_m:
+        lumo_m = re.search(r"LUMO\s+([-\d.]+)\s+eV", stdout)
+    try:
+        homo_ev = float(homo_m.group(1)) if homo_m else 0.0
+        lumo_ev = float(lumo_m.group(1)) if lumo_m else 0.0
+        gap_ev = float(gap_m.group(1)) if gap_m else (lumo_ev - homo_ev if homo_ev and lumo_ev else 0.0)
+        return homo_ev, lumo_ev, gap_ev
+    except (AttributeError, ValueError):
+        return 0.0, 0.0, 0.0
+
+
+def _parse_xtb_dipole(stdout: str) -> float:
+    """Return dipole magnitude in Debye from xTB stdout."""
+    # xTB prints: "molecular dipole:" block with "full:" line
+    m = re.search(r"full:\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)", stdout)
+    if m:
+        try:
+            return float(m.group(4))  # last field is magnitude in Debye
+        except ValueError:
+            pass
+    # Fallback: first "total" dipole line
+    m = re.search(r"dipole moment\s*[:\s]+([\d.]+)\s+Debye", stdout, re.IGNORECASE)
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
+    return 0.0
+
+
+def run_xtb_sp(
+    xtb_bin: str,
+    mol: Chem.Mol,
+    conf_id: int,
+    solvent: str,
+    output_dir: Path,
+    charge: int,
+    timeout_s: int,
+    label: str = "sp",
+) -> Optional[dict]:
+    """Run xTB GFN2 single-point with --pop to get CM5 charges + electronic properties.
+
+    Returns dict with keys: charges, homo_ev, lumo_ev, gap_ev, dipole_debye.
+    Returns None on failure.
+    """
+    archive_dir = output_dir / f"xtb_{label}_conf_{conf_id}"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = Path(tempfile.mkdtemp(prefix=f"easynmr_xtb_{label}_{conf_id}_"))
+    log_path = archive_dir / "xtb_sp.log"
+    stdout = ""
+    stderr = ""
+
+    try:
+        # Prefer previously optimised geometry if available
+        xyz_path = run_dir / "input.xyz"
+        archived_opt = output_dir.parent / f"xtb_conf_{conf_id}" / "xtbopt.xyz"
+        if archived_opt.exists():
+            shutil.copy2(archived_opt, xyz_path)
+        else:
+            write_conf_xyz(mol, conf_id, xyz_path, f"conf-{conf_id}")
+
+        cmd = [xtb_bin, str(xyz_path), "--gfn2", "--pop", "--chrg", str(charge)]
+        if solvent:
+            cmd.extend(["--alpb", solvent])
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=run_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+        except Exception:
+            return None
+
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:
+                proc.kill()
+            stdout, stderr = proc.communicate()
+            log_path.write_text((stdout or "") + "\n" + (stderr or ""), encoding="utf-8")
+            return None
+
+        log_path.write_text((stdout or "") + "\n" + (stderr or ""), encoding="utf-8")
+        if proc.returncode != 0:
+            return None
+
+        n_atoms = mol.GetNumAtoms()
+        charges = _parse_xtb_cm5_charges(stdout, n_atoms)
+        homo_ev, lumo_ev, gap_ev = _parse_xtb_homo_lumo(stdout)
+        dipole_debye = _parse_xtb_dipole(stdout)
+
+        if not charges:
+            return None
+
+        return {
+            "charges": charges,
+            "homo_ev": homo_ev,
+            "lumo_ev": lumo_ev,
+            "gap_ev": gap_ev,
+            "dipole_debye": dipole_debye,
+        }
+    finally:
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+
+def compute_fukui_indices(
+    charges_n: List[float],
+    charges_np1: List[float],
+    charges_nm1: List[float],
+) -> List[dict]:
+    """Compute condensed Fukui indices from CM5 atomic charges.
+
+    f+(i)  = q_N(i) - q_{N+1}(i)   electrophilic attack site
+    f-(i)  = q_{N-1}(i) - q_N(i)   nucleophilic attack site
+    f0(i)  = (f+(i) + f-(i)) / 2    radical attack site
+    Each index is normalized so the positive values sum to 1.0.
+    """
+    n = len(charges_n)
+    f_plus = [charges_n[i] - charges_np1[i] for i in range(n)]
+    f_minus = [charges_nm1[i] - charges_n[i] for i in range(n)]
+    f_zero = [(f_plus[i] + f_minus[i]) / 2.0 for i in range(n)]
+
+    def _normalize(values: List[float]) -> List[float]:
+        clamped = [max(0.0, v) for v in values]
+        total = sum(clamped)
+        if total > 0.0:
+            return [v / total for v in clamped]
+        return clamped
+
+    f_plus = _normalize(f_plus)
+    f_minus = _normalize(f_minus)
+    f_zero = _normalize(f_zero)
+    return [
+        {"f_plus": round(f_plus[i], 5), "f_minus": round(f_minus[i], 5), "f_zero": round(f_zero[i], 5)}
+        for i in range(n)
+    ]
+
+
+def _pka_group_table() -> List[Tuple[str, float, float, str, str]]:
+    """Return list of (smarts, pka_low, pka_high, group_name, site_type) for heuristic pKa."""
+    return [
+        # acidic groups
+        ("[CX3](=O)[OX2H1]",           3.5,  5.0, "Carboxylic acid",   "acidic"),
+        ("c[OX2H]",                     9.0, 10.5, "Phenol",            "acidic"),
+        ("[S](=O)(=O)[NX3H]",           9.5, 10.5, "Sulfonamide NH",    "acidic"),
+        ("[SX2H]",                      9.5, 11.0, "Thiol",             "acidic"),
+        ("[CX3](=O)[NX3H]",            15.0, 18.0, "Amide NH",          "acidic"),
+        ("[CX4][OX2H]",                15.0, 18.0, "Alkyl alcohol",     "acidic"),
+        # basic groups
+        ("[NX3][CX3](=[NX2])[NX3]",   12.0, 13.5, "Guanidine",         "basic"),
+        ("[CX3](=[NX2])[NX3]",        11.0, 12.5, "Amidine",           "basic"),
+        ("c[NX3H2]",                   4.0,  5.0, "Aromatic amine",    "basic"),
+        ("[CX4][NX3H2]",               9.5, 10.5, "Aliphatic 1° amine","basic"),
+        ("[CX4][NX3H1][CX4]",         10.0, 11.0, "Aliphatic 2° amine","basic"),
+        ("[NX3]([CX4])[CX4][CX4]",    9.5, 10.5, "Aliphatic 3° amine","basic"),
+        ("[nX2;!H]",                   5.0,  6.0, "Pyridine-like N",   "basic"),
+        ("[nH]",                        6.5,  7.5, "Imidazole NH",      "basic"),
+    ]
+
+
+def estimate_pka_groups(mol: Chem.Mol) -> List[dict]:
+    """Return list of pKa estimates for ionisable groups via SMARTS matching.
+
+    atom_idx is 1-based (matches structure display convention).
+    """
+    groups: List[dict] = []
+    seen_atoms: set = set()
+    for smarts, pka_low, pka_high, group_name, site_type in _pka_group_table():
+        pattern = Chem.MolFromSmarts(smarts)
+        if pattern is None:
+            continue
+        for match in mol.GetSubstructMatches(pattern):
+            # Ionisable atom: O for acids, N for amines, S for thiol
+            ionisable_idx = None
+            for idx in match:
+                atom = mol.GetAtomWithIdx(idx)
+                anum = atom.GetAtomicNum()
+                if site_type == "acidic" and anum in (7, 8, 16):
+                    ionisable_idx = idx
+                    break
+                if site_type == "basic" and anum == 7:
+                    ionisable_idx = idx
+                    break
+            if ionisable_idx is None:
+                ionisable_idx = match[0]
+            if ionisable_idx in seen_atoms:
+                continue
+            seen_atoms.add(ionisable_idx)
+            pka_est = round((pka_low + pka_high) / 2.0, 1)
+            groups.append({
+                "atom_idx": ionisable_idx + 1,  # 1-based
+                "pka_low": pka_low,
+                "pka_high": pka_high,
+                "pka_est": pka_est,
+                "group_name": group_name,
+                "site_type": site_type,
+            })
+    return groups
+
+
+def estimate_redox_potentials(homo_ev: float, lumo_ev: float) -> dict:
+    """Estimate oxidation/reduction potentials via Trasatti vacuum-to-NHE shift.
+
+    E_ox_NHE  ≈ −HOMO_eV − 4.44   (V vs NHE)
+    E_red_NHE ≈ −LUMO_eV − 4.44   (V vs NHE)
+    Also reported vs Fc/Fc+ (Fc ≈ +0.40 V vs NHE).
+    Warning: gas-phase estimates, errors typically ±0.5 V.
+    """
+    e_ox_nhe = round(-homo_ev - _VACUUM_TO_NHE_EV, 3)
+    e_red_nhe = round(-lumo_ev - _VACUUM_TO_NHE_EV, 3)
+    e_ox_fc = round(e_ox_nhe - _FC_VS_NHE_V, 3)
+    e_red_fc = round(e_red_nhe - _FC_VS_NHE_V, 3)
+    return {
+        "e_ox_nhe": e_ox_nhe,
+        "e_red_nhe": e_red_nhe,
+        "e_ox_fc": e_ox_fc,
+        "e_red_fc": e_red_fc,
+        "warning": "Estimates based on gas-phase GFN2-xTB HOMO/LUMO; errors \u00b10.5 V typical.",
+    }
+
+
+def predict_molecular_properties(
+    mol: Chem.Mol,
+    selected_confs: Sequence,
+    weights: Sequence[float],
+    solvent: str,
+    output_dir: Path,
+    warnings: List[str],
+    progress_path: Optional[Path],
+) -> dict:
+    """Orchestrate all property calculations and return a unified properties dict."""
+    props: dict = {
+        "rdkit": {},
+        "electronic": {},
+        "fukui": [],
+        "pka_groups": [],
+        "redox": {},
+        "warnings": [],
+        "used_xtb": False,
+    }
+
+    # (a) RDKit descriptors — always available
+    try:
+        props["rdkit"] = compute_rdkit_descriptors(mol)
+    except Exception as exc:
+        props["warnings"].append(f"RDKit descriptors failed: {exc}")
+
+    # (b) Heuristic pKa — always available
+    try:
+        props["pka_groups"] = estimate_pka_groups(mol)
+    except Exception as exc:
+        props["warnings"].append(f"pKa estimation failed: {exc}")
+
+    # (c) xTB electronic + Fukui
+    xtb_bin_env = os.environ.get("EASYSPECTRA_XTB", "xtb")
+    xtb_bin = None if xtb_bin_env == "__none__" else shutil.which(xtb_bin_env)
+    timeout_s = int(os.environ.get("EASYSPECTRA_XTB_TIMEOUT", "25"))
+
+    if not xtb_bin:
+        props["warnings"].append(
+            "xTB not available — skipping electronic properties and Fukui indices."
+        )
+        warnings.append("xTB not available; electronic properties and Fukui indices skipped.")
+        return props
+
+    target_conf = selected_confs[0]
+    conf_id = target_conf.conf_id
+    formal_charge = Chem.GetFormalCharge(mol)
+
+    sp_dir = output_dir / "xtb_properties"
+    sp_dir.mkdir(parents=True, exist_ok=True)
+
+    if progress_path:
+        write_progress(progress_path, "properties_sp", "Running xTB SP (N electrons)", 0.87)
+
+    result_n = run_xtb_sp(xtb_bin, mol, conf_id, solvent, sp_dir, formal_charge, timeout_s, label="spN")
+    if result_n is None:
+        props["warnings"].append("xTB SP (N electrons) failed — skipping electronic properties and Fukui.")
+        warnings.append("xTB SP run failed for properties; electronic properties skipped.")
+        return props
+
+    props["used_xtb"] = True
+    props["electronic"] = {
+        "homo_ev": round(result_n["homo_ev"], 4),
+        "lumo_ev": round(result_n["lumo_ev"], 4),
+        "gap_ev": round(result_n["gap_ev"], 4),
+        "dipole_debye": round(result_n["dipole_debye"], 3),
+    }
+
+    # Redox estimates from HOMO/LUMO
+    if result_n["homo_ev"] != 0.0 or result_n["lumo_ev"] != 0.0:
+        try:
+            props["redox"] = estimate_redox_potentials(result_n["homo_ev"], result_n["lumo_ev"])
+        except Exception as exc:
+            props["warnings"].append(f"Redox estimation failed: {exc}")
+
+    # Fukui: N+1 and N-1 SP runs
+    if progress_path:
+        write_progress(progress_path, "properties_sp", "Running xTB SP (N+1 electrons)", 0.90)
+    result_np1 = run_xtb_sp(xtb_bin, mol, conf_id, solvent, sp_dir, formal_charge - 1, timeout_s, label="spNp1")
+
+    if progress_path:
+        write_progress(progress_path, "properties_sp", "Running xTB SP (N-1 electrons)", 0.93)
+    result_nm1 = run_xtb_sp(xtb_bin, mol, conf_id, solvent, sp_dir, formal_charge + 1, timeout_s, label="spNm1")
+
+    if result_np1 is not None and result_nm1 is not None:
+        try:
+            fukui = compute_fukui_indices(
+                result_n["charges"],
+                result_np1["charges"],
+                result_nm1["charges"],
+            )
+            mol_no_h = Chem.RemoveHs(mol)
+            # Build element list from heavy-atom mol (indices may differ from full mol)
+            # Use full mol atom ordering — xTB works on full mol with H
+            for i, f in enumerate(fukui):
+                atom = mol.GetAtomWithIdx(i)
+                props["fukui"].append({
+                    "atom_idx": i + 1,  # 1-based
+                    "element": atom.GetSymbol(),
+                    "f_plus": f["f_plus"],
+                    "f_minus": f["f_minus"],
+                    "f_zero": f["f_zero"],
+                })
+        except Exception as exc:
+            props["warnings"].append(f"Fukui index computation failed: {exc}")
+    else:
+        props["warnings"].append(
+            "xTB SP (N\u00b11 electrons) failed — Fukui indices not available."
+        )
+
+    return props
+
+
+def write_properties_json(path: Path, props: dict) -> None:
+    """Write the properties dict to a structured JSON file."""
+    path.write_text(json.dumps(props, indent=2), encoding="utf-8")
+
+
 def write_spectrum_csv(path: Path, data: Sequence[Tuple[float, float]]) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
@@ -1898,10 +2355,10 @@ def main() -> int:
     progress_path = Path(str(request.get("progress_json", output_dir / "progress.json")))
     write_progress(progress_path, "initializing", "Starting easySpectra workflow", 0.01)
 
-    if workflow_kind not in {"all", "nmr", "cd", "ir", "compare"}:
+    if workflow_kind not in {"all", "nmr", "cd", "ir", "compare", "properties"}:
         message = (
             f"Unsupported workflow kind '{workflow_kind}'. "
-            "Currently available workflows: all, nmr, cd, ir, compare."
+            "Currently available workflows: all, nmr, cd, ir, compare, properties."
         )
         write_progress(progress_path, "failed", message, 1.0)
         response = {
@@ -2143,6 +2600,7 @@ def main() -> int:
     run_nmr = workflow_kind in {"all", "nmr"}
     run_cd = workflow_kind in {"all", "cd"}
     run_ir = workflow_kind in {"all", "ir"}
+    run_properties = workflow_kind in {"all", "properties"}
 
     target_nuclei: List[str] = []
     if run_nmr:
@@ -2373,6 +2831,50 @@ def main() -> int:
         if not run_nmr and not run_cd or default_label not in output_by_label:
             default_label = "IR"
 
+    # ── Properties workflow ───────────────────────────────────────────────────
+    properties_json_path: Optional[Path] = None
+    if run_properties:
+        write_progress(
+            progress_path,
+            "properties_sp",
+            "Computing molecular properties (RDKit + xTB SP + Fukui + pKa)",
+            0.84 if not run_nmr and not run_cd and not run_ir else 0.95,
+        )
+        try:
+            props = predict_molecular_properties(
+                mol,
+                selected_confs,
+                conf_weights,
+                solvent=solvent,
+                output_dir=output_dir,
+                warnings=warnings,
+                progress_path=progress_path,
+            )
+            properties_json_path = output_dir / "properties.json"
+            write_properties_json(properties_json_path, props)
+        except Exception as exc:
+            warnings.append(f"Properties calculation failed: {exc}")
+            properties_json_path = None
+
+    # For a properties-only workflow, skip the spectra output check
+    if workflow_kind == "properties":
+        write_progress(progress_path, "done", "Properties prediction complete", 1.0)
+        response = {
+            "status": "ok",
+            "message": "Properties prediction complete",
+            "workflow": {"kind": workflow_kind},
+            "output_dir": str(output_dir),
+            "properties_json": str(properties_json_path) if properties_json_path else "",
+            "structure_svg": str(structure_svg),
+            "structure_atoms_csv": str(structure_atoms_csv),
+            "structure_bonds_csv": str(structure_bonds_csv),
+            "structure_xyz": str(structure_xyz) if structure_xyz is not None else "",
+            "progress_json": str(progress_path),
+            "warnings": warnings,
+        }
+        response_path.write_text(json.dumps(response, indent=2), encoding="utf-8")
+        return 0
+
     if not output_by_label:
         message = "No spectra products were generated for this workflow configuration."
         write_progress(progress_path, "failed", message, 1.0)
@@ -2467,6 +2969,7 @@ def main() -> int:
         "structure_atoms_csv": str(structure_atoms_csv),
         "structure_bonds_csv": str(structure_bonds_csv),
         "structure_xyz": str(structure_xyz) if structure_xyz is not None else "",
+        "properties_json": str(properties_json_path) if properties_json_path else "",
         "progress_json": str(progress_path),
         "warnings": warnings,
     }

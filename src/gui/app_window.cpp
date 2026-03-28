@@ -1198,6 +1198,7 @@ std::map<std::string, SpectralProductFiles> spectral_products_for_job(const Queu
     const std::string fallback_nucleus =
         (job.config.workflow_kind == WorkflowKind::Cd) ? "CD"
         : (job.config.workflow_kind == WorkflowKind::Ir) ? "IR"
+        : (job.config.workflow_kind == WorkflowKind::Properties) ? ""
         : normalize_nucleus_label(job.config.nucleus);
     SpectralProductFiles fallback;
     fallback.label = fallback_nucleus.empty() ? "1H" : fallback_nucleus;
@@ -1397,6 +1398,9 @@ std::string workflow_display_name(WorkflowKind kind) {
     }
     if (kind == WorkflowKind::Compare) {
         return "COMPARE";
+    }
+    if (kind == WorkflowKind::Properties) {
+        return "PROPS";
     }
     return "NMR";
 }
@@ -1601,6 +1605,7 @@ AppWindow::AppWindow(int w, int h, const char *title)
     workflow_choice_->add("nmr");
     workflow_choice_->add("cd");
     workflow_choice_->add("ir");
+    workflow_choice_->add("properties");
     workflow_choice_->value(0);
     workflow_choice_->box(FL_DOWN_BOX);
     workflow_choice_->color(ui(255, 255, 255));
@@ -1717,12 +1722,21 @@ AppWindow::AppWindow(int w, int h, const char *title)
     auto *spectrum_bg = new Fl_Box(FL_THIN_UP_BOX, right_x, right_y, right_w, spectrum_h, "");
     spectrum_bg->color(ui(250, 252, 255));
 
-    auto *spectrum_title = new Fl_Box(right_x + 10, right_y + 8, 220, 20, "Spectrum");
-    spectrum_title->box(FL_NO_BOX);
-    spectrum_title->labelfont(FL_HELVETICA_BOLD);
-    spectrum_title->labelsize(12);
-    spectrum_title->labelcolor(ui(68, 78, 92));
-    spectrum_title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+    view_spectra_btn_ = new Fl_Button(right_x + 8, right_y + 6, 86, 22, "Spectra");
+    view_spectra_btn_->box(FL_FLAT_BOX);
+    view_spectra_btn_->color(ui(70, 110, 170));
+    view_spectra_btn_->labelcolor(FL_WHITE);
+    view_spectra_btn_->labelfont(FL_HELVETICA_BOLD);
+    view_spectra_btn_->labelsize(11);
+    view_spectra_btn_->callback(on_view_spectra_cb, this);
+
+    view_properties_btn_ = new Fl_Button(right_x + 98, right_y + 6, 96, 22, "Properties");
+    view_properties_btn_->box(FL_FLAT_BOX);
+    view_properties_btn_->color(ui(210, 218, 230));
+    view_properties_btn_->labelcolor(ui(68, 78, 92));
+    view_properties_btn_->labelfont(FL_HELVETICA);
+    view_properties_btn_->labelsize(11);
+    view_properties_btn_->callback(on_view_properties_cb, this);
 
     spectrum_widget_ = new SpectrumWidget(right_x + 8, right_y + 30, right_w - 16, spectrum_h - 38, "Spectrum");
     spectrum_widget_->set_on_peak_selected([this](int group_id) { on_peak_picked(group_id); });
@@ -1763,10 +1777,11 @@ AppWindow::AppWindow(int w, int h, const char *title)
     const int tab_inner_y = tabs_y + 30;
     const int tab_inner_h = tabs_h - 30;
 
-    auto *bottom_tabs = new Fl_Tabs(right_x, tabs_y, right_w, tabs_h);
-    bottom_tabs->box(FL_THIN_UP_BOX);
-    bottom_tabs->color(ui(243, 247, 253));
-    bottom_tabs->labelsize(11);
+    bottom_tabs_ = new Fl_Tabs(right_x, tabs_y, right_w, tabs_h);
+    bottom_tabs_->box(FL_THIN_UP_BOX);
+    bottom_tabs_->color(ui(243, 247, 253));
+    bottom_tabs_->labelsize(11);
+    auto *bottom_tabs = bottom_tabs_;
 
     // ── TAB 1: Peaks ─────────────────────────────────────────────────────────
     {
@@ -1964,6 +1979,51 @@ AppWindow::AppWindow(int w, int h, const char *title)
 
     bottom_tabs->end();
 
+    // ── Properties view (hidden initially, covers spectrum + tabs area) ──────
+    const int props_y = right_y + 30;
+    const int props_h = (tabs_y + tabs_h) - props_y;
+    properties_widget_ = new PropertiesWidget(right_x + 8, props_y, right_w - 16, props_h);
+    properties_widget_->hide();
+    properties_widget_->set_on_overlay_changed([this](const std::string &mode) {
+        if (selected_job_index_ < 0) return;
+        QueuedJob job;
+        {
+            std::lock_guard<std::mutex> lock(jobs_mutex_);
+            if (static_cast<std::size_t>(selected_job_index_) >= jobs_.size()) return;
+            job = jobs_[static_cast<std::size_t>(selected_job_index_)];
+        }
+        if (!job.properties_json.empty()) {
+            const MolecularProperties props = load_properties_json(job.properties_json);
+            if (props.valid && props.has_fukui && mode != "none" && mode != "gradient_green") {
+                std::map<int, double> overlay_map;
+                for (const auto &fa : props.fukui) {
+                    double val = 0.0;
+                    if (mode == "gradient_red")  val = fa.f_plus;
+                    else if (mode == "gradient_blue") val = fa.f_minus;
+                    else val = fa.f_zero;
+                    overlay_map[fa.atom_index] = val;
+                }
+                if (structure_widget_) structure_widget_->set_atom_overlay(overlay_map, mode);
+            } else if (props.valid && !props.pka_groups.empty() && mode == "gradient_green") {
+                // normalise pKa values: lower pKa (more acidic) → higher value for acidic,
+                // higher pKa (more basic) → higher value for basic
+                std::map<int, double> overlay_map;
+                double max_est = 1.0;
+                for (const auto &pg : props.pka_groups) {
+                    if (pg.pka_est > max_est) max_est = pg.pka_est;
+                }
+                for (const auto &pg : props.pka_groups) {
+                    overlay_map[pg.atom_index] = pg.pka_est / max_est;
+                }
+                if (structure_widget_) structure_widget_->set_atom_overlay(overlay_map, mode);
+            } else {
+                if (structure_widget_) structure_widget_->clear_atom_overlay();
+            }
+        } else {
+            if (structure_widget_) structure_widget_->clear_atom_overlay();
+        }
+    });
+
     end();
     refresh_example_choice();
     refresh_experimental_choice();
@@ -2107,6 +2167,14 @@ void AppWindow::on_export_spectrum_cb(Fl_Widget *, void *userdata) {
     static_cast<AppWindow *>(userdata)->on_export_spectrum();
 }
 
+void AppWindow::on_view_spectra_cb(Fl_Widget *, void *userdata) {
+    static_cast<AppWindow *>(userdata)->show_spectra_view();
+}
+
+void AppWindow::on_view_properties_cb(Fl_Widget *, void *userdata) {
+    static_cast<AppWindow *>(userdata)->show_properties_view();
+}
+
 void AppWindow::on_select_example_cb(Fl_Widget *, void *userdata) {
     static_cast<AppWindow *>(userdata)->on_select_example();
 }
@@ -2139,6 +2207,9 @@ void AppWindow::on_worker_awake(void *userdata) {
         }
         if (should_reload_selected) {
             self->load_selected_job_visuals();
+            if (self->properties_view_active_) {
+                self->refresh_properties_panel(selected - 1);
+            }
         }
     }
     self->redraw();
@@ -2718,6 +2789,9 @@ void AppWindow::on_select_job() {
         }
     }
     load_selected_job_visuals();
+    if (properties_view_active_) {
+        refresh_properties_panel(selected_job_index_);
+    }
     maybe_apply_example_overlay_for_active_selection();
     refresh_queue_browser();
 }
@@ -4703,6 +4777,84 @@ void AppWindow::refresh_workflow_browser(const QueuedJob *job) {
     workflow_info_line3_->copy_label(truncate_text(detail.str(), 120).c_str());
 }
 
+void AppWindow::show_spectra_view() {
+    properties_view_active_ = false;
+    if (spectrum_widget_)          spectrum_widget_->show();
+    if (bottom_tabs_)              bottom_tabs_->show();
+    if (spectrum_nucleus_choice_)  spectrum_nucleus_choice_->show();
+    if (load_experimental_button_) load_experimental_button_->show();
+    if (clear_experimental_button_) clear_experimental_button_->show();
+    if (export_spectrum_button_)   export_spectrum_button_->show();
+    if (properties_widget_)        properties_widget_->hide();
+    // Clear any active overlay from structure when returning to spectra
+    if (structure_widget_)         structure_widget_->clear_atom_overlay();
+
+    if (view_spectra_btn_) {
+        view_spectra_btn_->color(fl_rgb_color(70, 110, 170));
+        view_spectra_btn_->labelcolor(FL_WHITE);
+        view_spectra_btn_->labelfont(FL_HELVETICA_BOLD);
+        view_spectra_btn_->redraw();
+    }
+    if (view_properties_btn_) {
+        view_properties_btn_->color(fl_rgb_color(210, 218, 230));
+        view_properties_btn_->labelcolor(fl_rgb_color(68, 78, 92));
+        view_properties_btn_->labelfont(FL_HELVETICA);
+        view_properties_btn_->redraw();
+    }
+    redraw();
+}
+
+void AppWindow::show_properties_view() {
+    properties_view_active_ = true;
+    if (spectrum_widget_)          spectrum_widget_->hide();
+    if (bottom_tabs_)              bottom_tabs_->hide();
+    if (spectrum_nucleus_choice_)  spectrum_nucleus_choice_->hide();
+    if (load_experimental_button_) load_experimental_button_->hide();
+    if (clear_experimental_button_) clear_experimental_button_->hide();
+    if (export_spectrum_button_)   export_spectrum_button_->hide();
+    if (properties_widget_)        properties_widget_->show();
+
+    if (view_spectra_btn_) {
+        view_spectra_btn_->color(fl_rgb_color(210, 218, 230));
+        view_spectra_btn_->labelcolor(fl_rgb_color(68, 78, 92));
+        view_spectra_btn_->labelfont(FL_HELVETICA);
+        view_spectra_btn_->redraw();
+    }
+    if (view_properties_btn_) {
+        view_properties_btn_->color(fl_rgb_color(70, 110, 170));
+        view_properties_btn_->labelcolor(FL_WHITE);
+        view_properties_btn_->labelfont(FL_HELVETICA_BOLD);
+        view_properties_btn_->redraw();
+    }
+
+    refresh_properties_panel(selected_job_index_);
+    redraw();
+}
+
+void AppWindow::refresh_properties_panel(int job_index) {
+    if (properties_widget_ == nullptr) return;
+    if (job_index < 0) {
+        properties_widget_->clear();
+        return;
+    }
+    QueuedJob job;
+    {
+        std::lock_guard<std::mutex> lock(jobs_mutex_);
+        const std::size_t index = static_cast<std::size_t>(job_index);
+        if (index >= jobs_.size()) {
+            properties_widget_->clear();
+            return;
+        }
+        job = jobs_[index];
+    }
+    if (job.properties_json.empty()) {
+        properties_widget_->clear();
+        return;
+    }
+    const MolecularProperties props = load_properties_json(job.properties_json);
+    properties_widget_->set_properties(props);
+}
+
 void AppWindow::run_worker_loop() {
     const std::size_t no_index = static_cast<std::size_t>(-1);
 
@@ -4726,6 +4878,8 @@ void AppWindow::run_worker_loop() {
                         jobs_[next_index].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> NMR + CD + IR products";
                     } else if (jobs_[next_index].config.workflow_kind == WorkflowKind::Compare) {
                         jobs_[next_index].message = "Reactant + product conformers -> NMR prediction -> spectral comparison";
+                    } else if (jobs_[next_index].config.workflow_kind == WorkflowKind::Properties) {
+                        jobs_[next_index].message = "ETKDG conformers -> xTB SP (N/N+1/N-1) -> Fukui + pKa + descriptors";
                     } else {
                         const std::string nucleus_mode = (normalize_nucleus_label(jobs_[next_index].config.nucleus) == "1H"
                                                           && jobs_[next_index].config.nucleus != "auto")
@@ -4750,6 +4904,8 @@ void AppWindow::run_worker_loop() {
                             jobs_[i].message = "ETKDG conformers -> xTB/MMFF -> Boltzmann -> NMR + CD + IR products";
                         } else if (jobs_[i].config.workflow_kind == WorkflowKind::Compare) {
                             jobs_[i].message = "Reactant + product conformers -> NMR prediction -> spectral comparison";
+                        } else if (jobs_[i].config.workflow_kind == WorkflowKind::Properties) {
+                            jobs_[i].message = "ETKDG conformers -> xTB SP (N/N+1/N-1) -> Fukui + pKa + descriptors";
                         } else {
                             const std::string nucleus_mode = (normalize_nucleus_label(jobs_[i].config.nucleus) == "1H"
                                                               && jobs_[i].config.nucleus != "auto")
@@ -4824,6 +4980,7 @@ void AppWindow::run_worker_loop() {
                 job.structure_product_svg = result.structure_product_svg;
                 job.structure_atoms_product_csv = result.structure_atoms_product_csv;
                 job.structure_bonds_product_csv = result.structure_bonds_product_csv;
+                job.properties_json = result.properties_json;
                 if (result.status == "ok") {
                     job.message = "done";
                     job.progress_stage = "done";

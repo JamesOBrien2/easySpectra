@@ -52,6 +52,7 @@ enum class WorkflowKind {
     Cd,
     Ir,
     Compare,
+    Properties,
     Unknown
 };
 
@@ -67,6 +68,8 @@ inline std::string to_string(WorkflowKind kind) {
         return "ir";
     case WorkflowKind::Compare:
         return "compare";
+    case WorkflowKind::Properties:
+        return "properties";
     default:
         return "unknown";
     }
@@ -91,6 +94,9 @@ inline WorkflowKind workflow_kind_from_string(const std::string &value) {
     }
     if (lowered == "compare") {
         return WorkflowKind::Compare;
+    }
+    if (lowered == "properties" || lowered == "props") {
+        return WorkflowKind::Properties;
     }
     return WorkflowKind::Unknown;
 }
@@ -140,6 +146,8 @@ struct JobOutputs {
     std::string structure_product_svg;
     std::string structure_atoms_product_csv;
     std::string structure_bonds_product_csv;
+    // Properties workflow.
+    std::string properties_json;
     std::vector<std::string> warnings;
 };
 

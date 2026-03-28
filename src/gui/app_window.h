@@ -2,8 +2,10 @@
 
 #include "core/job.h"
 #include "core/pipeline.h"
+#include "core/properties.h"
 #include "core/spectral_product.h"
 #include "gui/colored_input_editor.h"
+#include "gui/properties_widget.h"
 #include "gui/spectrum_widget.h"
 #include "gui/structure_widget.h"
 #include "gui/workflow_progress_widget.h"
@@ -47,6 +49,7 @@ struct QueuedJob {
     std::string structure_product_svg;
     std::string structure_atoms_product_csv;
     std::string structure_bonds_product_csv;
+    std::string properties_json;
     std::string message;
     std::string progress_stage;
     std::string progress_message;
@@ -60,6 +63,8 @@ class AppWindow : public Fl_Double_Window {
     int handle(int event) override;
 
   private:
+    static void on_view_spectra_cb(Fl_Widget *, void *userdata);
+    static void on_view_properties_cb(Fl_Widget *, void *userdata);
     static void on_queue_job_cb(Fl_Widget *, void *userdata);
     static void on_start_queue_cb(Fl_Widget *, void *userdata);
     static void on_cancel_cb(Fl_Widget *, void *userdata);
@@ -117,6 +122,10 @@ class AppWindow : public Fl_Double_Window {
     void launch_pubchem_lookup(const std::string &name, bool then_queue);
     void poll_pubchem_lookup();
 
+    void show_spectra_view();
+    void show_properties_view();
+    void refresh_properties_panel(int job_index);
+
     void run_worker_loop();
     void refresh_queue_browser();
     void refresh_workflow_browser(const QueuedJob *job);
@@ -164,6 +173,11 @@ class AppWindow : public Fl_Double_Window {
     Fl_Button *export_spectrum_button_ = nullptr;
     Fl_Box *status_box_ = nullptr;
     SpectrumWidget *spectrum_widget_ = nullptr;
+    Fl_Tabs *bottom_tabs_ = nullptr;
+    PropertiesWidget *properties_widget_ = nullptr;
+    Fl_Button *view_spectra_btn_ = nullptr;
+    Fl_Button *view_properties_btn_ = nullptr;
+    bool properties_view_active_ = false;
     Fl_Box *comparison_placeholder_ = nullptr;
     Fl_Box *comparison_header_box_ = nullptr;
     Fl_Box *comparison_overall_box_ = nullptr;

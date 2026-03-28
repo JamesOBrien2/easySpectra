@@ -145,6 +145,18 @@ void StructureWidget::clear_highlight() {
     redraw();
 }
 
+void StructureWidget::set_atom_overlay(std::map<int, double> values, std::string mode) {
+    atom_overlay_values_ = std::move(values);
+    atom_overlay_mode_ = std::move(mode);
+    redraw();
+}
+
+void StructureWidget::clear_atom_overlay() {
+    atom_overlay_values_.clear();
+    atom_overlay_mode_ = "none";
+    redraw();
+}
+
 void StructureWidget::set_on_atom_selected(std::function<void(int, const std::vector<int> &)> callback) {
     on_atom_selected_ = std::move(callback);
 }
@@ -270,8 +282,32 @@ void StructureWidget::draw() {
             fl_pie(sx - 13, sy - 13, 26, 26, 0, 360);
         }
 
-        const int radius = is_selected ? 7 : (touches_highlight ? 6 : 5);
-        fl_color(element_color(atom.element));
+        // Determine atom fill colour (overlay takes precedence over element colour).
+        auto overlay_it = atom_overlay_values_.find(atom.atom_index);
+        Fl_Color atom_fill;
+        bool has_overlay = (atom_overlay_mode_ != "none" && overlay_it != atom_overlay_values_.end());
+        if (has_overlay) {
+            const double t = std::max(0.0, std::min(1.0, overlay_it->second));
+            const unsigned char base_r = 245, base_g = 245, base_b = 245;
+            unsigned char end_r, end_g, end_b;
+            if (atom_overlay_mode_ == "gradient_red") {
+                end_r = 210; end_g = 50; end_b = 50;
+            } else if (atom_overlay_mode_ == "gradient_blue") {
+                end_r = 50; end_g = 80; end_b = 200;
+            } else {  // gradient_green (pKa)
+                end_r = 50; end_g = 160; end_b = 90;
+            }
+            atom_fill = rgb(
+                static_cast<unsigned char>(base_r + t * (end_r - base_r)),
+                static_cast<unsigned char>(base_g + t * (end_g - base_g)),
+                static_cast<unsigned char>(base_b + t * (end_b - base_b))
+            );
+        } else {
+            atom_fill = element_color(atom.element);
+        }
+
+        const int radius = is_selected ? 7 : (touches_highlight ? 6 : has_overlay ? 6 : 5);
+        fl_color(atom_fill);
         fl_pie(sx - radius, sy - radius, radius * 2, radius * 2, 0, 360);
 
         fl_color(is_selected ? selected_border_color_ : rgb(78, 86, 102));
