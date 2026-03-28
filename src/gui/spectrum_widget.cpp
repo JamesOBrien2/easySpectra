@@ -32,6 +32,12 @@ bool is_cd_label(const std::string &label) {
     return lower.find("cd") != std::string::npos;
 }
 
+bool is_ir_label(const std::string &label) {
+    const std::string lower = to_lower_copy(label);
+    return lower.find("ir") != std::string::npos || lower.find("infrared") != std::string::npos
+           || lower.find("wavenumber") != std::string::npos;
+}
+
 struct SpectrumPalette {
     Fl_Color panel_bg = rgb(250, 252, 255);
     Fl_Color panel_border = rgb(221, 229, 240);
@@ -762,7 +768,10 @@ void SpectrumWidget::draw() {
 
     if (zoom_active_) {
         std::ostringstream zoom_note;
-        if (reverse_axis) {
+        if (is_ir_label(nucleus_label_)) {
+            zoom_note << "Zoom: " << std::fixed << std::setprecision(0) << max_ppm << " to " << min_ppm
+                      << " cm\u207b\u00b9 (double-click to reset)";
+        } else if (reverse_axis) {
             zoom_note << "Zoom: " << std::fixed << std::setprecision(2) << max_ppm << " to " << min_ppm
                       << " ppm (double-click to reset)";
         } else {
@@ -782,7 +791,7 @@ void SpectrumWidget::draw() {
     const int tick_step = (max_ticks >= 10) ? 1 : (max_ticks >= 5) ? 2 : 5;
 
     fl_color(pal.tick);
-    const int precision = (ppm_range < 3.0) ? 2 : 1;
+    const int precision = is_ir_label(nucleus_label_) ? 0 : (ppm_range < 3.0) ? 2 : 1;
     for (int i = 0; i <= 10; i += tick_step) {
         const int tick_x = plot_x0 + i * plot_w / 10;
         double ppm_tick = 0.0;
@@ -803,7 +812,9 @@ void SpectrumWidget::draw() {
     // Axis unit label: right-align inside the plot, on a separate baseline below ticks.
     fl_color(pal.axis_label);
     fl_font(FL_HELVETICA, axis_font_size);
-    const char *axis_label_text = reverse_axis ? "delta [ppm]" : "wavelength [nm]";
+    const char *axis_label_text = is_ir_label(nucleus_label_)
+                                      ? "wavenumber [cm\u207b\u00b9]"
+                                      : (reverse_axis ? "delta [ppm]" : "wavelength [nm]");
     const int axis_label_w = static_cast<int>(fl_width(axis_label_text));
     const int axis_label_x = std::max(x() + 2, plot_x0 + plot_w - axis_label_w - 2);
     fl_draw(axis_label_text, axis_label_x, y() + h() - 4);

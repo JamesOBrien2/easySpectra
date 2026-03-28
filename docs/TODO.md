@@ -30,8 +30,9 @@ Legend:
 - Horizon: `Near` = practical with current stack, `Mid` = possible with extra rules/work, `Far` = likely needs additional engines or data.
 - Difficulty: `Low`, `Medium`, `High`.
 
-- [ ] IR prediction v1 (frequencies + intensities + broadened plot) from xTB outputs. Horizon: `Near`, Difficulty: `Medium`.
+- [x] IR prediction v1 (Boltzmann-weighted xTB Hessian, group-based fallback, Lorentzian broadening, GFN2 scaling factor). Horizon: `Near`, Difficulty: `Medium`.
 - [ ] IR quality controls (scaling factor presets, line broadening presets, and simple peak labels). Horizon: `Near`, Difficulty: `Low`.
+- [ ] UV-Vis prediction via xTB --stda (simplified TD-DFT absorption spectrum). Horizon: `Near`, Difficulty: `Medium`.
 - [ ] Exact mass and isotope pattern calculator from molecular formula (quick MS support without fragmentation). Horizon: `Near`, Difficulty: `Low`.
 - [ ] Common adduct support for MS mode (`[M+H]+`, `[M+Na]+`, `[M-H]-`, etc.) with m/z table output. Horizon: `Near`, Difficulty: `Low`.
 - [ ] Property panel for per-conformer and ensemble values (dipole, HOMO/LUMO gap, relative energies). Horizon: `Near`, Difficulty: `Medium`.
@@ -39,6 +40,18 @@ Legend:
 - [ ] Mass-spec fragmentation prototype (rule-based fragments for simple molecules). Horizon: `Mid`, Difficulty: `High`.
 - [ ] Mass-spec fragmentation scoring and ranking against experimental peaks. Horizon: `Far`, Difficulty: `High`.
 - [ ] Raman prediction module. Horizon: `Far`, Difficulty: `High`.
+- [ ] NOESY-style interproton distance constraints from conformer ensemble (NOE distance matrix, useful for structure confirmation). Horizon: `Far`, Difficulty: `High`.
+
+## Easy Properties Panel (Separate Window)
+
+A dedicated "Easy Properties" view that keeps the left-hand input/queue column but replaces the spectrum area with a property dashboard. Target: synthetic organic and medicinal chemists who want quick property estimates alongside spectral predictions.
+
+- [ ] **Easy Properties window scaffold** — new tab/window with same left column, property panel replacing spectrum area. Horizon: `Mid`, Difficulty: `Medium`.
+- [ ] pKa prediction (empirical, per acidic/basic group using RDKit + group additivity). Horizon: `Mid`, Difficulty: `Medium`.
+- [ ] Fukui indices (nucleophilicity/electrophilicity per atom from frontier MOs, xTB-derived). Horizon: `Mid`, Difficulty: `Medium`.
+- [ ] Bond dissociation energy (BDE) estimates for common bond types (C-H, C-C, N-O etc.) from empirical rules or xTB. Horizon: `Mid`, Difficulty: `High`.
+- [ ] Redox potential estimates (oxidation/reduction) from HOMO/LUMO gap and empirical corrections. Horizon: `Mid`, Difficulty: `High`.
+- [ ] LogP / TPSA / MW / HBD / HBA quick property table (RDKit Lipinski/Veber). Horizon: `Near`, Difficulty: `Low`.
 
 ## Data and File Support
 

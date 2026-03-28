@@ -50,6 +50,7 @@ enum class WorkflowKind {
     All,
     Nmr,
     Cd,
+    Ir,
     Compare,
     Unknown
 };
@@ -62,6 +63,8 @@ inline std::string to_string(WorkflowKind kind) {
         return "nmr";
     case WorkflowKind::Cd:
         return "cd";
+    case WorkflowKind::Ir:
+        return "ir";
     case WorkflowKind::Compare:
         return "compare";
     default:
@@ -82,6 +85,9 @@ inline WorkflowKind workflow_kind_from_string(const std::string &value) {
     }
     if (lowered == "cd" || lowered == "ecd") {
         return WorkflowKind::Cd;
+    }
+    if (lowered == "ir" || lowered == "infrared") {
+        return WorkflowKind::Ir;
     }
     if (lowered == "compare") {
         return WorkflowKind::Compare;

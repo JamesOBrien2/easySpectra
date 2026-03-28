@@ -12,7 +12,9 @@ This roadmap prioritizes what can be delivered well with the current stack first
 ## Near-Term (Best Fit for Current xTB Stack)
 
 - Complete CD from scaffold to a stronger production path.
-- IR prediction v1 using xTB-derived frequencies/intensities with practical plotting controls.
+- ~~IR prediction v1~~ **Done** — Boltzmann-weighted xTB Hessian (max 10 conformers, GFN2 scaling 0.974), group-based heuristic fallback, full 400–4000 cm⁻¹ range, `ir` workflow + included in `all`.
+- IR quality controls (scaling factor UI, line broadening presets, peak labels).
+- UV-Vis prediction via xTB `--stda` (simplified TD-DFT absorption bands).
 - Exact mass + isotope pattern support (formula-based, quick MS utility).
 - Adduct table support for common positive/negative ionization modes.
 - Property summaries from current runs (dipole, HOMO/LUMO gap, conformer energy spread).
@@ -27,6 +29,7 @@ Why near-term:
 - Better computed/experimental alignment tools (auto-shift, normalization options, simple fit metrics).
 - Broader import tooling for vendor exports and conversion helpers.
 - Batch workflow enhancements for larger curated comparison suites.
+- **Easy Properties panel** — dedicated property dashboard (pKa, Fukui indices, BDE, redox potentials, Lipinski) keeping the same left-hand queue column; aimed at synthetic organic and medicinal chemists needing quick estimates.
 
 Why mid-term:
 - Feasible, but requires substantial rules/heuristics and validation to avoid misleading outputs.
@@ -35,6 +38,7 @@ Why mid-term:
 
 - Higher-quality MS/MS fragmentation prediction and confidence scoring.
 - Raman module with usable quality targets.
+- NOESY-style interproton distance constraints from conformer ensemble.
 - Optional high-accuracy engine integrations for selected products (for example ORCA-backed workflows).
 - Deeper quantitative matching layers for experimental/computed benchmarking.
 

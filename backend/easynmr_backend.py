@@ -29,6 +29,9 @@ KCAL_PER_EH = 627.509474
 GAS_R_KCAL = 0.0019872041
 TEMP_K = 298.15
 MAX_PARALLEL_XTB = 4
+# GFN2-xTB harmonic frequency scaling factor (Merz et al., JCTC 2021)
+IR_SCALE_FACTOR_GFN2: float = 0.9740
+IR_MAX_HESS_CONFS: int = 10
 
 SOLVENT_ALIASES = {
     "cdcl3": "chcl3",
@@ -1179,6 +1182,365 @@ def _find_cd_band_extrema(data: Sequence[Tuple[float, float]], limit: int = 8) -
     return extrema[:limit]
 
 
+# ---------------------------------------------------------------------------
+# IR prediction
+# ---------------------------------------------------------------------------
+
+# Heuristic band table: (SMARTS, freq_cm1, rel_intensity_km_mol, label)
+# Used as fallback when xTB Hessian is unavailable.
+_IR_HEURISTIC_BANDS: List[Tuple[str, float, float, str]] = [
+    # sp3 C-H stretches (present in nearly all organics)
+    ("[CX4;H]",                                         2930.0, 60.0,  "C-H str (sp3)"),
+    ("[CX4;H]",                                         2860.0, 40.0,  "C-H str (sp3 sym)"),
+    # O-H stretches
+    ("[OX2H;!$([OX2H][CX3]=O)]",                       3380.0, 100.0, "O-H str"),
+    ("[CX3](=O)[OX2H]",                                 3000.0, 70.0,  "O-H str (COOH)"),
+    # N-H stretches
+    ("[NX3H2]",                                         3420.0, 55.0,  "N-H str (NH2)"),
+    ("[NX3H2]",                                         3330.0, 55.0,  "N-H str (NH2 2nd)"),
+    ("[NX3H1]",                                         3340.0, 50.0,  "N-H str"),
+    # sp C-H
+    ("[CX2H]#[CX2]",                                    3300.0, 35.0,  "C-H str (terminal alkyne)"),
+    # sp2 C-H
+    ("[cH]",                                            3020.0, 25.0,  "Ar C-H str"),
+    ("[CX3H]=[CX3]",                                    3080.0, 25.0,  "=C-H str"),
+    # Aldehyde C-H (Fermi doublet)
+    ("[CX3H1](=O)",                                     2820.0, 35.0,  "C-H str (ald)"),
+    ("[CX3H1](=O)",                                     2720.0, 30.0,  "C-H str (ald 2nd)"),
+    # Carbonyl C=O stretches
+    ("[CX3H1](=O)",                                     1725.0, 100.0, "C=O str (ald)"),
+    ("[CX3](=O)[CX4]",                                  1715.0, 100.0, "C=O str (ket)"),
+    ("[CX3](=O)[OX2H0][#6]",                            1735.0, 100.0, "C=O str (ester)"),
+    ("[CX3](=O)[OX2H]",                                 1710.0, 100.0, "C=O str (acid)"),
+    ("[CX3](=O)[NX3]",                                  1660.0, 90.0,  "C=O str (amide)"),
+    # Triple bonds
+    ("[C]#[N]",                                         2230.0, 90.0,  "C≡N str"),
+    ("[CX2]#[CX2]",                                     2150.0, 35.0,  "C≡C str"),
+    # Aromatic C=C
+    ("a:a",                                             1600.0, 40.0,  "C=C str (arom)"),
+    ("a:a",                                             1500.0, 30.0,  "C=C str (arom 2nd)"),
+    # Nitro
+    ("[$([N+](=O)[O-]),$([N](=O)=O)]",                 1540.0, 90.0,  "NO2 asym str"),
+    ("[$([N+](=O)[O-]),$([N](=O)=O)]",                 1350.0, 70.0,  "NO2 sym str"),
+    # Ethers and esters C-O
+    ("[OD2;X2]([CX4])[CX4]",                           1100.0, 70.0,  "C-O-C str (ether)"),
+    ("[CX3](=O)[OX2H0][CX4]",                          1200.0, 60.0,  "C-O str (ester)"),
+    # Halogens
+    ("[F]",                                             1150.0, 80.0,  "C-F str"),
+    ("[Cl]",                                             730.0, 60.0,  "C-Cl str"),
+    ("[Br]",                                             590.0, 50.0,  "C-Br str"),
+    # Sulfur
+    ("[SX4](=O)(=O)",                                   1330.0, 90.0,  "SO2 asym str"),
+    ("[SX4](=O)(=O)",                                   1150.0, 80.0,  "SO2 sym str"),
+    ("[SX3](=O)",                                       1060.0, 80.0,  "S=O str"),
+    # Phosphorus
+    ("[PX4]=O",                                         1200.0, 90.0,  "P=O str"),
+]
+
+
+def _ir_heuristic_peaks(mol: Chem.Mol) -> List[Tuple[float, float, str]]:
+    """Group-based heuristic IR peaks. Returns (freq_cm1, rel_intensity, label)."""
+    peaks: List[Tuple[float, float, str]] = []
+    seen: set = set()
+    for smarts, freq, intensity, label in _IR_HEURISTIC_BANDS:
+        key = (smarts, freq)
+        if key in seen:
+            continue
+        try:
+            pattern = Chem.MolFromSmarts(smarts)
+        except Exception:
+            continue
+        if pattern is None:
+            continue
+        try:
+            matches = mol.GetSubstructMatches(pattern)
+        except Exception:
+            continue
+        if not matches:
+            continue
+        seen.add(key)
+        # Scale slightly with match count but cap contribution
+        scaled = intensity * min(1.5, 0.7 + 0.3 * math.sqrt(len(matches)))
+        peaks.append((freq, scaled, label))
+    return peaks
+
+
+def _label_ir_band(freq_cm1: float) -> str:
+    """Assign a rough region label to an xTB-derived vibrational frequency."""
+    if freq_cm1 >= 3000:
+        return "X-H str"
+    if freq_cm1 >= 2500:
+        return "C-H str"
+    if freq_cm1 >= 2000:
+        return "triple bond"
+    if freq_cm1 >= 1700:
+        return "C=O str"
+    if freq_cm1 >= 1500:
+        return "C=C/N str"
+    if freq_cm1 >= 1200:
+        return "C-O/N str"
+    return "fingerprint"
+
+
+def _parse_vibspectrum(path: Path) -> List[Tuple[float, float]]:
+    """Parse xTB vibspectrum file. Returns (freq_cm1, I_IR_km_mol) for real modes (>50 cm⁻¹)."""
+    peaks: List[Tuple[float, float]] = []
+    if not path.exists():
+        return peaks
+    try:
+        in_block = False
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith("$vibrational spectrum"):
+                    in_block = True
+                    continue
+                if line.startswith("$end"):
+                    break
+                if not in_block or line.startswith("#"):
+                    continue
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                try:
+                    freq = float(parts[2])
+                    ir_int = float(parts[3])
+                except (ValueError, IndexError):
+                    continue
+                if freq < 50.0:
+                    continue
+                peaks.append((freq, max(0.0, ir_int)))
+    except Exception:
+        pass
+    return peaks
+
+
+def _parse_xtb_ir_stdout(stdout: str) -> List[Tuple[float, float]]:
+    """Extract frequencies + IR intensities from xTB stdout (fallback to vibspectrum file)."""
+    peaks: List[Tuple[float, float]] = []
+    freq_values: List[float] = []
+    intens_values: List[float] = []
+    freq_re = re.compile(r"eigval\s*:([\s\d.+\-eE]+)")
+    intens_re = re.compile(r"intens\s*:([\s\d.+\-eE]+)")
+    for line in stdout.splitlines():
+        m = freq_re.search(line)
+        if m:
+            for tok in m.group(1).split():
+                try:
+                    freq_values.append(float(tok))
+                except ValueError:
+                    pass
+        m = intens_re.search(line)
+        if m:
+            for tok in m.group(1).split():
+                try:
+                    intens_values.append(float(tok))
+                except ValueError:
+                    pass
+    for freq, intens in zip(freq_values, intens_values):
+        if freq >= 50.0:
+            peaks.append((freq, abs(intens)))
+    return peaks
+
+
+def run_xtb_hessian(
+    xtb_bin: str,
+    mol: Chem.Mol,
+    conf_id: int,
+    solvent: str,
+    output_dir: Path,
+    timeout_s: int,
+) -> List[Tuple[float, float]]:
+    """Run xTB GFN2 Hessian on one conformer. Returns (freq_cm1, I_IR_km_mol) for real modes."""
+    archive_dir = output_dir / f"xtb_hess_conf_{conf_id}"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = Path(tempfile.mkdtemp(prefix=f"easynmr_xtb_hess_{conf_id}_"))
+    log_path = archive_dir / "xtb_hess.log"
+    stdout = ""
+    stderr = ""
+    try:
+        xyz_path = run_dir / "input.xyz"
+        write_conf_xyz(mol, conf_id, xyz_path, f"conf-{conf_id}")
+
+        cmd = [xtb_bin, str(xyz_path), "--gfn2", "--hess"]
+        if solvent:
+            cmd.extend(["--alpb", solvent])
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=run_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+        except Exception:
+            return []
+
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:
+                proc.kill()
+            stdout, stderr = proc.communicate()
+            log_path.write_text((stdout or "") + "\n" + (stderr or ""), encoding="utf-8")
+            return []
+
+        log_path.write_text((stdout or "") + "\n" + (stderr or ""), encoding="utf-8")
+        if proc.returncode != 0:
+            return []
+
+        vibspec_path = run_dir / "vibspectrum"
+        peaks = _parse_vibspectrum(vibspec_path)
+        if peaks:
+            try:
+                shutil.copy2(vibspec_path, archive_dir / "vibspectrum")
+            except Exception:
+                pass
+            return peaks
+        return _parse_xtb_ir_stdout(stdout)
+    finally:
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+
+def simulate_ir_spectrum(
+    sticks: Sequence[Tuple[float, float]],
+    scale_factor: float = IR_SCALE_FACTOR_GFN2,
+    fwhm_cm1: float = 8.0,
+    n_points: int = 2000,
+) -> List[Tuple[float, float]]:
+    """Broaden an IR stick spectrum into a continuous trace (Lorentzian).
+
+    Returns list of (wavenumber_cm1, intensity) covering 4000→400 cm⁻¹,
+    normalised to a max intensity of 1.0.
+    """
+    wn_axis = np.linspace(4000.0, 400.0, n_points)
+    intensity = np.zeros(n_points)
+    half_gamma = fwhm_cm1 / 2.0
+    for freq, intens in sticks:
+        scaled = freq * scale_factor
+        denom = (wn_axis - scaled) ** 2 + half_gamma ** 2
+        intensity += intens * half_gamma / (np.pi * np.maximum(denom, 1e-12))
+    max_int = float(np.max(intensity))
+    if max_int > 0.0:
+        intensity /= max_int
+    return list(zip(wn_axis.tolist(), intensity.tolist()))
+
+
+def predict_ir_spectrum(
+    mol: Chem.Mol,
+    selected_confs: Sequence[ConformerResult],
+    weights: np.ndarray,
+    solvent: str,
+    output_dir: Path,
+    warnings: List[str],
+    progress_path: Optional[Path] = None,
+) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float, str]], bool]:
+    """Predict an IR spectrum.
+
+    Runs xTB Hessian on the top Boltzmann-weighted conformers (max IR_MAX_HESS_CONFS),
+    averages the stick spectra by Boltzmann weight, then broadens with Lorentzian.
+    Falls back to group-based heuristics if xTB is unavailable or fails.
+
+    Returns:
+        spectrum: list of (wavenumber_cm1, intensity) – broadened trace
+        labeled_peaks: list of (wavenumber_cm1, intensity, label) – key peaks for display
+        used_heuristic: True if the heuristic fallback was used
+    """
+    xtb_bin_env = os.environ.get("EASYSPECTRA_XTB", "xtb")
+    xtb_bin = None if xtb_bin_env == "__none__" else shutil.which(xtb_bin_env)
+    timeout_s = int(os.environ.get("EASYSPECTRA_XTB_TIMEOUT", "25"))
+
+    used_heuristic = False
+    raw_sticks: List[Tuple[float, float]] = []
+
+    if xtb_bin and selected_confs:
+        n = min(len(selected_confs), IR_MAX_HESS_CONFS)
+        hess_confs = selected_confs[:n]
+        hess_weights = weights[:n].copy()
+        w_sum = float(np.sum(hess_weights))
+        if w_sum <= 0.0:
+            w_sum = 1.0
+        hess_weights /= w_sum
+
+        valid = 0
+        for i, conf in enumerate(hess_confs):
+            if progress_path is not None:
+                write_progress(
+                    progress_path, "ir_hessian",
+                    f"Running xTB Hessian on conformer {i + 1}/{n}",
+                    0.84 + 0.06 * (i / max(1, n)),
+                )
+            conf_peaks = run_xtb_hessian(xtb_bin, mol, conf.conf_id, solvent, output_dir, timeout_s)
+            if conf_peaks:
+                w = float(hess_weights[i])
+                for freq, intens in conf_peaks:
+                    raw_sticks.append((freq, intens * w))
+                valid += 1
+
+        if valid == 0:
+            warnings.append(
+                "xTB Hessian failed for all selected conformers; "
+                "falling back to group-based IR estimate."
+            )
+            used_heuristic = True
+    else:
+        warnings.append(
+            "xTB not available for IR Hessian prediction; "
+            "using group-based IR estimate (qualitative only)."
+        )
+        used_heuristic = True
+
+    # Build labeled peaks list
+    labeled_peaks: List[Tuple[float, float, str]] = []
+    if used_heuristic:
+        heuristic = _ir_heuristic_peaks(mol)
+        raw_sticks = [(f, i) for f, i, _ in heuristic]
+        labeled_peaks = heuristic
+        fwhm = 20.0
+    else:
+        # Label xTB peaks by frequency region
+        labeled_peaks = [(f, i, _label_ir_band(f)) for f, i in raw_sticks]
+        fwhm = 8.0
+
+    spectrum = simulate_ir_spectrum(raw_sticks, IR_SCALE_FACTOR_GFN2, fwhm)
+    return spectrum, labeled_peaks, used_heuristic
+
+
+def write_ir_spectrum_csv(path: Path, data: Sequence[Tuple[float, float]]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["wavenumber", "intensity"])
+        for wn, intensity in data:
+            writer.writerow([f"{wn:.2f}", f"{intensity:.8f}"])
+
+
+def write_ir_peaks_csv(
+    path: Path,
+    labeled_peaks: Sequence[Tuple[float, float, str]],
+    scale_factor: float = IR_SCALE_FACTOR_GFN2,
+    top_n: int = 24,
+) -> None:
+    """Write IR peaks in a format the C++ peak browser can display.
+
+    Columns mirror the NMR peaks CSV so the C++ read_peak_rows parser can load them:
+    peak_id, wavenumber_cm1, wavenumber_cm1, label, j_hz, rel_intensity, assignment, atom_indices
+    """
+    sorted_peaks = sorted(labeled_peaks, key=lambda x: x[1], reverse=True)[:top_n]
+    sorted_peaks.sort(key=lambda x: x[0], reverse=True)  # display high→low
+    max_int = max((i for _, i, _ in sorted_peaks), default=1.0) or 1.0
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["peak_id", "wavenumber_cm1", "wavenumber_cm1", "label", "j_hz", "rel_intensity", "assignment", "atom_indices"])
+        for idx, (freq, intens, label) in enumerate(sorted_peaks, start=1):
+            scaled = freq * scale_factor
+            rel = intens / max_int
+            writer.writerow([idx, f"{scaled:.1f}", f"{scaled:.1f}", label, "0.00", f"{rel:.4f}", "", ""])
+
+
 def write_spectrum_csv(path: Path, data: Sequence[Tuple[float, float]]) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
@@ -1536,10 +1898,10 @@ def main() -> int:
     progress_path = Path(str(request.get("progress_json", output_dir / "progress.json")))
     write_progress(progress_path, "initializing", "Starting easySpectra workflow", 0.01)
 
-    if workflow_kind not in {"all", "nmr", "cd", "compare"}:
+    if workflow_kind not in {"all", "nmr", "cd", "ir", "compare"}:
         message = (
             f"Unsupported workflow kind '{workflow_kind}'. "
-            "Currently available workflows: all, nmr, cd, compare."
+            "Currently available workflows: all, nmr, cd, ir, compare."
         )
         write_progress(progress_path, "failed", message, 1.0)
         response = {
@@ -1780,6 +2142,7 @@ def main() -> int:
 
     run_nmr = workflow_kind in {"all", "nmr"}
     run_cd = workflow_kind in {"all", "cd"}
+    run_ir = workflow_kind in {"all", "ir"}
 
     target_nuclei: List[str] = []
     if run_nmr:
@@ -1877,7 +2240,7 @@ def main() -> int:
     spectra_rows: List[Tuple[str, Path, Path, Path]] = []
     output_by_label: Dict[str, Dict[str, Path]] = {}
     produced_products: List[str] = []
-    default_label = "CD" if run_cd and not run_nmr else "1H"
+    default_label = "CD" if run_cd and not run_nmr and not run_ir else "1H"
 
     if run_nmr:
         total_targets = max(1, len(target_nuclei))
@@ -1971,6 +2334,44 @@ def main() -> int:
         produced_products.append("CD")
         if not run_nmr or default_label not in output_by_label:
             default_label = "CD"
+
+    if run_ir:
+        write_progress(
+            progress_path,
+            "ir_hessian",
+            "Running xTB Hessian for IR prediction (Boltzmann-weighted conformers)",
+            0.84 if not run_nmr and not run_cd else 0.91,
+        )
+        ir_spectrum, ir_labeled_peaks, ir_used_heuristic = predict_ir_spectrum(
+            mol,
+            selected_confs,
+            conf_weights,
+            solvent=solvent,
+            output_dir=output_dir,
+            warnings=warnings,
+            progress_path=progress_path,
+        )
+        write_progress(progress_path, "ir_spectrum_simulation", "Simulating IR spectrum", 0.92 if not run_nmr and not run_cd else 0.95)
+
+        spectrum_csv_ir = output_dir / "spectrum_ir.csv"
+        peaks_csv_ir = output_dir / "peaks_ir.csv"
+        assignments_json_ir = output_dir / "assignments_ir.json"
+        assignments_csv_ir = output_dir / "assignments_ir.csv"
+
+        write_ir_spectrum_csv(spectrum_csv_ir, ir_spectrum)
+        write_ir_peaks_csv(peaks_csv_ir, ir_labeled_peaks)
+        write_empty_assignments(assignments_json_ir, assignments_csv_ir, "IR")
+
+        spectra_rows.append(("IR", spectrum_csv_ir, peaks_csv_ir, assignments_csv_ir))
+        output_by_label["IR"] = {
+            "spectrum_csv": spectrum_csv_ir,
+            "peaks_csv": peaks_csv_ir,
+            "assignments_json": assignments_json_ir,
+            "assignments_csv": assignments_csv_ir,
+        }
+        produced_products.append("IR")
+        if not run_nmr and not run_cd or default_label not in output_by_label:
+            default_label = "IR"
 
     if not output_by_label:
         message = "No spectra products were generated for this workflow configuration."
