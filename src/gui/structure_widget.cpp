@@ -145,15 +145,6 @@ void StructureWidget::clear_highlight() {
     redraw();
 }
 
-void StructureWidget::set_props_selected_atom(int atom_index) {
-    props_selected_atom_ = atom_index;
-    redraw();
-}
-
-void StructureWidget::clear_props_selected_atom() {
-    props_selected_atom_ = -1;
-    redraw();
-}
 
 void StructureWidget::set_atom_overlay(std::map<int, double> values, std::string mode) {
     atom_overlay_values_ = std::move(values);
@@ -326,13 +317,6 @@ void StructureWidget::draw() {
         fl_line_style(FL_SOLID, is_selected ? 2 : 1);
         fl_arc(sx - radius, sy - radius, radius * 2, radius * 2, 0, 360);
 
-        // Properties panel cross-highlight: amber ring drawn on top.
-        if (props_selected_atom_ == atom.atom_index) {
-            fl_color(fl_rgb_color(230, 150, 0));
-            fl_line_style(FL_SOLID, 2);
-            fl_arc(sx - radius - 3, sy - radius - 3, (radius + 3) * 2, (radius + 3) * 2, 0, 360);
-            fl_line_style(FL_SOLID, 1);
-        }
     }
 
     fl_line_style(FL_SOLID, 0);

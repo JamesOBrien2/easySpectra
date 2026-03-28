@@ -46,11 +46,6 @@ class StructureWidget : public Fl_Widget {
     void set_atom_overlay(std::map<int, double> values, std::string mode);
     void clear_atom_overlay();
 
-    // Properties panel cross-highlight — amber ring drawn on top of the gradient overlay,
-    // independent of the NMR selected_atom_index_ / filled-disc highlight.
-    void set_props_selected_atom(int atom_index);  // -1 to clear
-    void clear_props_selected_atom();
-
     void draw() override;
     int handle(int event) override;
 
@@ -70,7 +65,6 @@ class StructureWidget : public Fl_Widget {
     // Atom overlay state
     std::map<int, double> atom_overlay_values_;  // 1-based atom index → normalised value [0,1]
     std::string atom_overlay_mode_ = "none";
-    int props_selected_atom_ = -1;               // properties panel selection (amber ring)
 };
 
 } // namespace easynmr
