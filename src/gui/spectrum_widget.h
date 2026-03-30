@@ -60,6 +60,7 @@ class SpectrumWidget : public Fl_Widget {
     void clear_manual_shift_pairs();
     void clear_experimental_points();
     void set_on_peak_selected(std::function<void(int)> callback);
+    void set_on_peak_hover(std::function<void(int, int, int)> callback);
     void set_on_manual_shift_pair(std::function<void(int, int)> callback);
     bool load_from_csv(const std::string &csv_path);
     void reset_zoom();
@@ -85,11 +86,13 @@ class SpectrumWidget : public Fl_Widget {
     std::unordered_set<int> selected_group_ids_;
     std::unordered_set<int> selected_comparison_group_ids_;
     std::function<void(int)> on_peak_selected_;
+    std::function<void(int, int, int)> on_peak_hover_;
     std::function<void(int, int)> on_manual_shift_pair_;
     std::string line_shape_ = "lorentzian";
     double fwhm_hz_ = 1.0;
     double frequency_mhz_ = 400.0;
     int armed_primary_group_id_ = 0;
+    int hovered_primary_group_id_ = 0;
 
     bool zoom_active_ = false;
     double view_min_ppm_ = 0.0;

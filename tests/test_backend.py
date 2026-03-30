@@ -24,6 +24,7 @@ from easynmr_backend import (
     COMPARE_TOLERANCE_PPM,
     boltzmann_weights,
     compute_ms_data,
+    generate_ms_spectrum_rows,
     estimate_c_shift,
     estimate_f_shift,
     estimate_h_shift,
@@ -1099,3 +1100,29 @@ class TestComputeMsData:
         adducts = {a["name"]: a for a in data["adducts"]}
         assert adducts["[M+2H]2+"]["charge"] == 2
         assert adducts["[M-2H]2-"]["charge"] == 2
+
+    def test_generate_ms_rows_include_peak_metadata_files(self, tmp_path):
+        data = compute_ms_data(self._mol("CCO"))
+        rows = generate_ms_spectrum_rows(data, tmp_path)
+        assert rows, "Expected MS+ / MS- rows"
+        for _, spectrum_csv, peaks_csv, assignments_csv in rows:
+            assert spectrum_csv.exists()
+            assert peaks_csv.exists()
+            assert assignments_csv.exists()
+            text = peaks_csv.read_text(encoding="utf-8")
+            assert "peak_id,mz,mz,label,j_hz,rel_intensity,assignment,atom_indices" in text
+            assert "[M+H]+" in text or "[M-H]-" in text
+
+    def test_generate_ms_rows_include_m_and_m_plus_1_isotopes(self, tmp_path):
+        data = compute_ms_data(self._mol("c1ccccc1"))
+        rows = generate_ms_spectrum_rows(data, tmp_path)
+        assert rows
+        positive_peaks = None
+        for label, _, peaks_csv, _ in rows:
+            if label == "MS+":
+                positive_peaks = peaks_csv
+                break
+        assert positive_peaks is not None
+        text = positive_peaks.read_text(encoding="utf-8")
+        assert "iso=M;" in text
+        assert "iso=M+1;" in text

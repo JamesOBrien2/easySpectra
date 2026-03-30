@@ -34,6 +34,8 @@ struct PeakRow {
     std::string multiplicity;
     double j_hz = 0.0;
     double integral = 0.0;
+    std::string label;
+    std::string assignment;
 };
 
 struct WorkflowStep {
@@ -60,6 +62,7 @@ bool is_proton_nucleus(const std::string &nucleus);
 std::string nucleus_symbol(const std::string &nucleus);
 bool is_known_nmr_nucleus(const std::string &label);
 std::string spectrum_title_for_label(const std::string &label);
+bool is_ms_spectrum_label(const std::string &label);
 std::string workflow_display_name(WorkflowKind kind);
 std::string make_overlay_label_from_path(const std::string &path);
 std::string make_unique_overlay_key(
@@ -1009,10 +1012,16 @@ std::vector<PeakRow> read_peak_rows(const std::string &path) {
         if (!try_parse_double(fields[1], row.center_ppm)) {
             continue;
         }
-        row.multiplicity = trim_copy(fields[3]);
-        try_parse_double(fields[4], row.j_hz);
-        if (!try_parse_double(fields[5], row.integral)) {
-            continue;
+        row.label = (fields.size() > 3) ? trim_copy(fields[3]) : "";
+        row.assignment = (fields.size() > 6) ? trim_copy(fields[6]) : "";
+        row.multiplicity = row.label;
+        if (fields.size() > 4) {
+            try_parse_double(fields[4], row.j_hz);
+        }
+        if (fields.size() > 5) {
+            if (!try_parse_double(fields[5], row.integral)) {
+                row.integral = 0.0;
+            }
         }
         rows.push_back(row);
     }
@@ -1385,6 +1394,16 @@ std::string spectrum_title_for_label(const std::string &label) {
         return normalized + " Spectrum";
     }
     return "Spectrum";
+}
+
+bool is_ms_spectrum_label(const std::string &label) {
+    std::string lower = trim_copy(label);
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return lower == "ms+" || lower == "ms-" || lower == "ms"
+           || lower.find("ms+") != std::string::npos
+           || lower.find("ms-") != std::string::npos;
 }
 
 std::string workflow_display_name(WorkflowKind kind) {
@@ -2305,6 +2324,7 @@ void AppWindow::on_ui_tick_cb(void *userdata) {
     auto *self = static_cast<AppWindow *>(userdata);
     self->poll_preview_async();
     self->poll_pubchem_lookup();
+
     bool has_running_work = self->worker_running_.load();
     if (!has_running_work) {
         std::lock_guard<std::mutex> lock(self->jobs_mutex_);
@@ -2599,7 +2619,7 @@ void AppWindow::poll_preview_async() {
         auto structure_atoms = read_structure_atoms(preview.structure_atoms_csv);
         auto structure_bonds = read_structure_bonds(preview.structure_bonds_csv);
         if (structure_widget_ != nullptr) {
-            structure_widget_->set_structure(std::move(structure_atoms), std::move(structure_bonds));
+            structure_widget_->set_structure(structure_atoms, structure_bonds);
         }
         active_nucleus_ = (cfg.workflow_kind == WorkflowKind::Cd) ? "CD" : normalize_nucleus_label(cfg.nucleus);
         apply_reference_peaks(cfg.solvent, active_nucleus_);
@@ -2770,7 +2790,7 @@ void AppWindow::edit_current_structure() {
     auto structure_atoms = read_structure_atoms(preview.structure_atoms_csv);
     auto structure_bonds = read_structure_bonds(preview.structure_bonds_csv);
     if (structure_widget_ != nullptr) {
-        structure_widget_->set_structure(std::move(structure_atoms), std::move(structure_bonds));
+        structure_widget_->set_structure(structure_atoms, structure_bonds);
     }
     active_nucleus_ = (cfg.workflow_kind == WorkflowKind::Cd) ? "CD" : normalize_nucleus_label(cfg.nucleus);
     apply_reference_peaks(cfg.solvent, active_nucleus_);
@@ -4348,6 +4368,7 @@ void AppWindow::apply_nucleus_visuals(const QueuedJob &job, const std::string &n
     }
 
     const auto peak_rows = read_peak_rows(files.peaks_csv);
+    const bool ms_mode = is_ms_spectrum_label(active_nucleus_);
     group_to_atoms_ = read_assignments(files.assignments_csv);
     apply_reference_peaks(job.config.solvent, active_nucleus_);
     spectrum_widget_->set_nucleus_label(spectrum_title_for_label(active_nucleus_));
@@ -4364,7 +4385,16 @@ void AppWindow::apply_nucleus_visuals(const QueuedJob &job, const std::string &n
     std::vector<PeakMarker> markers;
     for (const auto &row : peak_rows) {
         std::ostringstream label;
-        label << "G" << row.group_id << " | " << row.center_ppm << " ppm | " << row.multiplicity << " | int " << row.integral;
+        if (ms_mode) {
+            label << "P" << row.group_id << " | m/z " << std::fixed << std::setprecision(4) << row.center_ppm;
+            if (!row.label.empty()) {
+                label << " | " << row.label;
+            }
+            label << " | rel " << std::setprecision(1) << (row.integral * 100.0) << "%";
+        } else {
+            label << "G" << row.group_id << " | " << row.center_ppm << " ppm | "
+                  << row.multiplicity << " | int " << row.integral;
+        }
         peak_browser_->add(label.str().c_str());
         const int browser_row = peak_browser_->size();
         group_to_peak_row_[row.group_id] = browser_row;
@@ -4494,7 +4524,7 @@ void AppWindow::load_selected_job_visuals() {
     auto structure_atoms = read_structure_atoms(job.structure_atoms_csv);
     auto structure_bonds = read_structure_bonds(job.structure_bonds_csv);
     if (structure_widget_ != nullptr) {
-        structure_widget_->set_structure(std::move(structure_atoms), std::move(structure_bonds));
+        structure_widget_->set_structure(structure_atoms, structure_bonds);
     }
 
     if (job.config.workflow_kind == WorkflowKind::Compare && !job.structure_atoms_product_csv.empty()) {

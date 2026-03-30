@@ -2555,22 +2555,46 @@ def generate_ms_spectrum_rows(
     gamma = FWHM_DA / 2.0
     STEP = 0.005
 
-    empty_peaks = output_dir / "ms_peaks_empty.csv"
-    if not empty_peaks.exists():
-        empty_peaks.write_text("mz,label\n", encoding="utf-8")
+    formula = str(ms_data.get("formula", "")).strip()
+    empty_assignments = output_dir / "ms_assignments_empty.csv"
+    if not empty_assignments.exists():
+        with empty_assignments.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["group_id", "center_ppm", "multiplicity", "atom_indices"])
 
     rows: List[Tuple[str, Path, Path, Path]] = []
-    for mode, label, csv_name in (("+", "MS+", "ms_positive.csv"), ("-", "MS-", "ms_negative.csv")):
+    for mode, label, csv_name, peaks_name in (
+        ("+", "MS+", "ms_positive.csv", "ms_peaks_positive.csv"),
+        ("-", "MS-", "ms_negative.csv", "ms_peaks_negative.csv"),
+    ):
         mode_adducts = [a for a in adducts if a["mode"] == mode]
         if not mode_adducts:
             continue
 
         sticks: list = []
+        peak_rows: list = []
+        peak_id = 0
         for adduct in mode_adducts:
             base_mz = adduct["mz"]
             charge = adduct["charge"]
+            adduct_name = adduct["name"]
             for iso in isotope_pattern:
-                sticks.append((base_mz + iso["mass_offset"] / charge, iso["relative_abundance"]))
+                peak_mz = base_mz + iso["mass_offset"] / charge
+                rel_abundance = iso["relative_abundance"]
+                sticks.append((peak_mz, rel_abundance))
+                peak_id += 1
+                iso_offset = int(iso.get("mass_offset", 0))
+                iso_label = "M" if iso_offset == 0 else f"M+{iso_offset}"
+                assignment = f"formula={formula};iso={iso_label};charge={charge}"
+                peak_rows.append(
+                    (
+                        peak_id,
+                        peak_mz,
+                        adduct_name,
+                        rel_abundance / 100.0,
+                        assignment,
+                    )
+                )
 
         if not sticks:
             continue
@@ -2591,7 +2615,25 @@ def generate_ms_spectrum_rows(
             f.write("mz,intensity\n")
             for mz_val, int_val in zip(mz_axis, intensity):
                 f.write(f"{mz_val:.4f},{int_val:.8f}\n")
-        rows.append((label, csv_path, empty_peaks, empty_peaks))
+
+        peaks_path = output_dir / peaks_name
+        with peaks_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["peak_id", "mz", "mz", "label", "j_hz", "rel_intensity", "assignment", "atom_indices"])
+            for row_id, peak_mz, adduct_name, rel_int, assignment in peak_rows:
+                writer.writerow(
+                    [
+                        row_id,
+                        f"{peak_mz:.4f}",
+                        f"{peak_mz:.4f}",
+                        adduct_name,
+                        "0.00",
+                        f"{rel_int:.4f}",
+                        assignment,
+                        "",
+                    ]
+                )
+        rows.append((label, csv_path, peaks_path, empty_assignments))
 
     return rows
 

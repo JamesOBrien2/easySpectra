@@ -204,6 +204,10 @@ SpectrumWidget::SpectrumWidget(int x, int y, int w, int h, const char *label)
 void SpectrumWidget::set_points(std::vector<SpectrumPoint> points) {
     points_ = std::move(points);
     armed_primary_group_id_ = 0;
+    hovered_primary_group_id_ = 0;
+    if (on_peak_hover_) {
+        on_peak_hover_(0, 0, 0);
+    }
     reset_zoom();
     selecting_zoom_ = false;
     redraw();
@@ -222,6 +226,10 @@ void SpectrumWidget::set_peak_markers(std::vector<PeakMarker> markers) {
     peak_markers_ = std::move(markers);
     if (peak_markers_.empty()) {
         armed_primary_group_id_ = 0;
+        hovered_primary_group_id_ = 0;
+        if (on_peak_hover_) {
+            on_peak_hover_(0, 0, 0);
+        }
     }
     redraw();
 }
@@ -333,6 +341,10 @@ void SpectrumWidget::clear_experimental_points() {
 
 void SpectrumWidget::set_on_peak_selected(std::function<void(int)> callback) {
     on_peak_selected_ = std::move(callback);
+}
+
+void SpectrumWidget::set_on_peak_hover(std::function<void(int, int, int)> callback) {
+    on_peak_hover_ = std::move(callback);
 }
 
 void SpectrumWidget::set_on_manual_shift_pair(std::function<void(int, int)> callback) {
@@ -851,7 +863,78 @@ void SpectrumWidget::draw() {
 }
 
 int SpectrumWidget::handle(int event) {
+    if (event == FL_ENTER) {
+        // Returning handled here ensures FLTK keeps sending FL_MOVE/FL_LEAVE
+        // events to this widget for hover interactions.
+        return 1;
+    }
+
+    if (event == FL_MOVE) {
+        if (!is_ms_label(nucleus_label_) || peak_markers_.empty()) {
+            if (hovered_primary_group_id_ != 0) {
+                hovered_primary_group_id_ = 0;
+                if (on_peak_hover_) {
+                    on_peak_hover_(0, 0, 0);
+                }
+            }
+            return Fl_Widget::handle(event);
+        }
+
+        const int mx = Fl::event_x();
+        const int my = Fl::event_y();
+        if (!point_in_plot(mx, my)) {
+            if (hovered_primary_group_id_ != 0) {
+                hovered_primary_group_id_ = 0;
+                if (on_peak_hover_) {
+                    on_peak_hover_(0, 0, 0);
+                }
+            }
+            return Fl_Widget::handle(event);
+        }
+
+        const double hovered_ppm = pixel_to_ppm(mx);
+        int best_primary_group = -1;
+        double best_primary_dist = 1e9;
+        for (const auto &marker : peak_markers_) {
+            const double d = std::abs(marker.center_ppm - hovered_ppm);
+            if (d < best_primary_dist) {
+                best_primary_dist = d;
+                best_primary_group = marker.group_id;
+            }
+        }
+
+        const auto [min_ppm, max_ppm] = active_ppm_bounds();
+        const double ppm_range = std::max(1e-9, max_ppm - min_ppm);
+        const int inner_w = std::max(1, w() - kPadLeft - kPadRight);
+        const double ppm_per_px = ppm_range / static_cast<double>(inner_w);
+        // Hover should feel consistent across zoom levels and wide MS ranges.
+        const double hover_pick_window = std::max(0.02, std::min(1.2, ppm_per_px * 8.0));
+        const bool hit_primary = best_primary_group > 0 && best_primary_dist <= hover_pick_window;
+        const int hovered_group = hit_primary ? best_primary_group : 0;
+        hovered_primary_group_id_ = hovered_group;
+        if (on_peak_hover_) {
+            on_peak_hover_(hovered_group, Fl::event_x_root(), Fl::event_y_root());
+        }
+        return 1;
+    }
+
+    if (event == FL_LEAVE) {
+        if (hovered_primary_group_id_ != 0) {
+            hovered_primary_group_id_ = 0;
+            if (on_peak_hover_) {
+                on_peak_hover_(0, Fl::event_x_root(), Fl::event_y_root());
+            }
+        }
+        return Fl_Widget::handle(event);
+    }
+
     if (event == FL_PUSH) {
+        if (hovered_primary_group_id_ != 0) {
+            hovered_primary_group_id_ = 0;
+            if (on_peak_hover_) {
+                on_peak_hover_(0, 0, 0);
+            }
+        }
         if (points_.size() < 2 && comparison_points_.size() < 2 && experimental_points_.size() < 2) {
             return Fl_Widget::handle(event);
         }
