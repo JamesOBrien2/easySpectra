@@ -29,6 +29,13 @@ KCAL_PER_EH = 627.509474
 GAS_R_KCAL = 0.0019872041
 TEMP_K = 298.15
 MAX_PARALLEL_XTB = 4
+
+LOT_PRESETS = {
+    "low":    {"max_conformers": 5,  "energy_window_kcal": 3.0,  "force_mmff": True,  "xtb_timeout": 25},
+    "medium": {"max_conformers": 20, "energy_window_kcal": 6.0,  "force_mmff": False, "xtb_timeout": 25},
+    "high":   {"max_conformers": 50, "energy_window_kcal": 10.0, "force_mmff": False, "xtb_timeout": 60},
+}
+
 # GFN2-xTB harmonic frequency scaling factor (Merz et al., JCTC 2021)
 IR_SCALE_FACTOR_GFN2: float = 0.9740
 IR_MAX_HESS_CONFS: int = 10
@@ -550,9 +557,11 @@ def optimize_conformers(
     output_dir: Path,
     warnings: List[str],
     progress_path: Optional[Path] = None,
+    force_mmff: bool = False,
+    timeout_override: Optional[int] = None,
 ) -> List[ConformerResult]:
     xtb_bin = os.environ.get("EASYSPECTRA_XTB", "xtb")
-    xtb_path = shutil.which(xtb_bin)
+    xtb_path = None if force_mmff else shutil.which(xtb_bin)
 
     results: List[ConformerResult] = []
 
@@ -573,7 +582,7 @@ def optimize_conformers(
         return results
 
     max_workers = max(1, min(MAX_PARALLEL_XTB, len(conf_ids)))
-    timeout_s = int(os.environ.get("EASYSPECTRA_XTB_TIMEOUT", "25"))
+    timeout_s = timeout_override if timeout_override is not None else int(os.environ.get("EASYSPECTRA_XTB_TIMEOUT", "25"))
     total = max(1, len(conf_ids))
     completed = 0
     xtb_count = 0
@@ -2213,6 +2222,99 @@ def estimate_redox_potentials(homo_ev: float, lumo_ev: float) -> dict:
     }
 
 
+def _compute_isotope_pattern(atom_counts: dict, max_peaks: int = 6) -> list:
+    """Return M, M+1, M+2, ... pattern via polynomial multiplication.
+
+    Each entry: {"mass_offset": int, "relative_abundance": float (0-100)}.
+    """
+    # (mass_offset_Da, probability) per element
+    ISOTOPES: dict = {
+        "C":  [(0, 0.9893), (1, 0.0107)],
+        "H":  [(0, 0.999885), (1, 0.000115)],
+        "N":  [(0, 0.99632), (1, 0.00368)],
+        "O":  [(0, 0.99757), (2, 0.00205)],   # 17O negligible
+        "S":  [(0, 0.9499), (1, 0.0075), (2, 0.0425)],
+        "Cl": [(0, 0.7577), (2, 0.2423)],
+        "Br": [(0, 0.5069), (2, 0.4931)],
+        "Si": [(0, 0.9222), (1, 0.0467), (2, 0.0310)],
+        "F":  [(0, 1.0)],
+        "P":  [(0, 1.0)],
+        "I":  [(0, 1.0)],
+    }
+    DEFAULT = [(0, 1.0)]
+
+    dist: dict = {0: 1.0}
+    for element, count in atom_counts.items():
+        elem_iso = ISOTOPES.get(element, DEFAULT)
+        for _ in range(count):
+            new_dist: dict = {}
+            for d_mass, d_prob in elem_iso:
+                for cur_mass, cur_prob in dist.items():
+                    key = cur_mass + d_mass
+                    new_dist[key] = new_dist.get(key, 0.0) + cur_prob * d_prob
+            dist = new_dist
+
+    if not dist:
+        return []
+    max_prob = max(dist.values())
+    result = []
+    for mass_offset in sorted(dist.keys())[:max_peaks]:
+        ra = round(dist[mass_offset] / max_prob * 100.0, 1)
+        if ra >= 0.05:
+            result.append({"mass_offset": mass_offset, "relative_abundance": ra})
+    return result
+
+
+def compute_ms_data(mol: Chem.Mol) -> dict:
+    """Return exact mass, common adduct m/z table, and isotope pattern."""
+    from rdkit.Chem import Descriptors, rdMolDescriptors
+
+    exact_mass = Descriptors.ExactMolWt(mol)
+    formula = rdMolDescriptors.CalcMolFormula(mol)
+
+    # Atom counts (heavy + implicit H) for isotope calc
+    atom_counts: dict = {}
+    for atom in mol.GetAtoms():
+        sym = atom.GetSymbol()
+        atom_counts[sym] = atom_counts.get(sym, 0) + 1
+        h_count = atom.GetTotalNumHs()
+        if h_count:
+            atom_counts["H"] = atom_counts.get("H", 0) + h_count
+
+    # Monoisotopic masses of common adduct species
+    H_MASS   = 1.007276   # proton
+    NA_MASS  = 22.989218
+    K_MASS   = 38.963158
+    NH4_MASS = 18.034164  # ammonium ion
+    CL_MASS  = 34.969402
+    HCOO     = 44.997655  # formate
+    ACET     = 59.013305  # acetate
+
+    adducts = [
+        # Positive mode
+        {"name": "[M+H]+",      "mz": round(exact_mass + H_MASS,          4), "charge": 1, "mode": "+"},
+        {"name": "[M+Na]+",     "mz": round(exact_mass + NA_MASS,          4), "charge": 1, "mode": "+"},
+        {"name": "[M+K]+",      "mz": round(exact_mass + K_MASS,           4), "charge": 1, "mode": "+"},
+        {"name": "[M+NH4]+",    "mz": round(exact_mass + NH4_MASS,         4), "charge": 1, "mode": "+"},
+        {"name": "[M+2H]2+",    "mz": round((exact_mass + 2*H_MASS) / 2,   4), "charge": 2, "mode": "+"},
+        # Negative mode
+        {"name": "[M-H]-",      "mz": round(exact_mass - H_MASS,           4), "charge": 1, "mode": "-"},
+        {"name": "[M+Cl]-",     "mz": round(exact_mass + CL_MASS,          4), "charge": 1, "mode": "-"},
+        {"name": "[M+HCOO]-",   "mz": round(exact_mass + HCOO,             4), "charge": 1, "mode": "-"},
+        {"name": "[M+CH3COO]-", "mz": round(exact_mass + ACET,             4), "charge": 1, "mode": "-"},
+        {"name": "[M-2H]2-",    "mz": round((exact_mass - 2*H_MASS) / 2,   4), "charge": 2, "mode": "-"},
+    ]
+
+    isotope_pattern = _compute_isotope_pattern(atom_counts)
+
+    return {
+        "monoisotopic_mass": round(exact_mass, 6),
+        "formula": formula,
+        "adducts": adducts,
+        "isotope_pattern": isotope_pattern,
+    }
+
+
 def predict_molecular_properties(
     mol: Chem.Mol,
     selected_confs: Sequence,
@@ -2225,6 +2327,7 @@ def predict_molecular_properties(
     """Orchestrate all property calculations and return a unified properties dict."""
     props: dict = {
         "rdkit": {},
+        "ms": {},
         "electronic": {},
         "fukui": [],
         "pka_groups": [],
@@ -2239,7 +2342,13 @@ def predict_molecular_properties(
     except Exception as exc:
         props["warnings"].append(f"RDKit descriptors failed: {exc}")
 
-    # (b) Heuristic pKa — always available
+    # (b) MS adducts + isotope pattern — always available (RDKit only, instant)
+    try:
+        props["ms"] = compute_ms_data(mol)
+    except Exception as exc:
+        props["warnings"].append(f"MS data calculation failed: {exc}")
+
+    # (c) Heuristic pKa — always available
     try:
         props["pka_groups"] = estimate_pka_groups(mol)
     except Exception as exc:
@@ -2427,6 +2536,78 @@ def write_spectra_manifest(
         writer.writerow(["spectrum_label", "spectrum_csv", "peaks_csv", "assignments_csv"])
         for nucleus_label, spectrum_csv, peaks_csv, assignments_csv in rows:
             writer.writerow([nucleus_label, str(spectrum_csv), str(peaks_csv), str(assignments_csv)])
+
+
+def generate_ms_spectra(ms_data: dict, output_dir: Path) -> Optional[Path]:
+    """Generate positive and negative mode MS stick spectra with isotope envelopes.
+
+    Each adduct's isotope cluster is placed at the correct m/z and broadened
+    with a narrow Lorentzian (FWHM 0.05 Da).  Returns the spectra_manifest.csv
+    path, or None if ms_data is empty.
+    """
+    adducts = ms_data.get("adducts", [])
+    isotope_pattern = ms_data.get("isotope_pattern", [])
+    if not adducts or not isotope_pattern:
+        return None
+
+    FWHM_DA = 0.05
+    gamma = FWHM_DA / 2.0
+    STEP = 0.005
+
+    def _make_spectrum_csv(mode_adducts: list, csv_path: Path) -> bool:
+        """Write a broadened m/z spectrum for a given list of adducts."""
+        # Collect raw stick peaks: (mz, relative_abundance)
+        sticks: list = []
+        for adduct in mode_adducts:
+            base_mz = adduct["mz"]
+            charge = adduct["charge"]
+            for iso in isotope_pattern:
+                # Isotope spacing = 1 Da / charge (0.5 for doubly charged)
+                peak_mz = base_mz + iso["mass_offset"] / charge
+                sticks.append((peak_mz, iso["relative_abundance"]))
+
+        if not sticks:
+            return False
+
+        min_mz = min(p[0] for p in sticks) - 3.0
+        max_mz = max(p[0] for p in sticks) + 3.0
+        mz_axis = np.arange(min_mz, max_mz + STEP, STEP)
+        intensity = np.zeros(len(mz_axis))
+
+        for peak_mz, peak_int in sticks:
+            dx = mz_axis - peak_mz
+            intensity += peak_int * (gamma * gamma) / (dx * dx + gamma * gamma)
+
+        max_int = intensity.max()
+        if max_int > 0:
+            intensity /= max_int
+
+        with csv_path.open("w", newline="", encoding="utf-8") as f:
+            f.write("mz,intensity\n")
+            for mz_val, int_val in zip(mz_axis, intensity):
+                f.write(f"{mz_val:.4f},{int_val:.8f}\n")
+        return True
+
+    pos_adducts = [a for a in adducts if a["mode"] == "+"]
+    neg_adducts = [a for a in adducts if a["mode"] == "-"]
+
+    pos_csv  = output_dir / "ms_positive.csv"
+    neg_csv  = output_dir / "ms_negative.csv"
+    empty_peaks = output_dir / "ms_peaks_empty.csv"
+    empty_peaks.write_text("mz,label\n", encoding="utf-8")
+
+    manifest_rows: list = []
+    if _make_spectrum_csv(pos_adducts, pos_csv):
+        manifest_rows.append(("MS+", pos_csv, empty_peaks, empty_peaks))
+    if _make_spectrum_csv(neg_adducts, neg_csv):
+        manifest_rows.append(("MS-", neg_csv, empty_peaks, empty_peaks))
+
+    if not manifest_rows:
+        return None
+
+    manifest_path = output_dir / "spectra_manifest.csv"
+    write_spectra_manifest(manifest_path, manifest_rows)
+    return manifest_path
 
 
 # ---------------------------------------------------------------------------
@@ -2673,9 +2854,18 @@ def main() -> int:
     frequency_mhz = float(settings.get("frequency_mhz", 400.0))
     line_shape = str(settings.get("line_shape", "lorentzian")).lower()
     fwhm_hz = float(settings.get("fwhm_hz", 1.0))
-    max_conformers = int(settings.get("max_conformers", 20))
+    lot = str(settings.get("level_of_theory", "medium")).lower()
+    lot_preset = LOT_PRESETS.get(lot, LOT_PRESETS["medium"])
+    # LOT preset is authoritative for conformer count and energy window.
+    # Only override if user explicitly supplied different values in the request
+    # (i.e., values that differ from the C++ default of 50 / 6.0).
+    _req_max_conf = int(settings.get("max_conformers", 50))
+    _req_ewin = float(settings.get("energy_window_kcal", 6.0))
+    max_conformers = _req_max_conf if _req_max_conf != 50 else lot_preset["max_conformers"]
+    energy_window_kcal = _req_ewin if _req_ewin != 6.0 else lot_preset["energy_window_kcal"]
     boltzmann_cutoff = float(settings.get("boltzmann_cutoff", 0.99))
-    energy_window_kcal = float(settings.get("energy_window_kcal", 6.0))
+    force_mmff_lot: bool = lot_preset["force_mmff"]
+    xtb_timeout_lot: int = lot_preset["xtb_timeout"]
     nucleus_request = normalize_nucleus(str(settings.get("nucleus", "auto")))
     need_editable_xyz = parse_bool(settings.get("need_editable_xyz", mode != "preview"), mode != "preview")
 
@@ -3011,6 +3201,8 @@ def main() -> int:
         output_dir=output_dir,
         warnings=warnings,
         progress_path=progress_path,
+        force_mmff=force_mmff_lot,
+        timeout_override=xtb_timeout_lot,
     )
     write_progress(progress_path, "conformer_optimization", "Conformer optimization complete", 0.70)
 
@@ -3235,6 +3427,14 @@ def main() -> int:
 
     # For a properties-only workflow, skip the spectra output check
     if workflow_kind == "properties":
+        # Generate MS stick spectra from the ms block computed in properties
+        ms_manifest_path: Optional[Path] = None
+        try:
+            _ms_block = props.get("ms", {}) if properties_json_path is not None else {}
+            ms_manifest_path = generate_ms_spectra(_ms_block, output_dir)
+        except Exception as exc:
+            warnings.append(f"MS spectrum generation failed: {exc}")
+
         write_progress(progress_path, "done", "Properties prediction complete", 1.0)
         response = {
             "status": "ok",
@@ -3242,6 +3442,7 @@ def main() -> int:
             "workflow": {"kind": workflow_kind},
             "output_dir": str(output_dir),
             "properties_json": str(properties_json_path) if properties_json_path else "",
+            "spectra_manifest_csv": str(ms_manifest_path) if ms_manifest_path else "",
             "structure_svg": str(structure_svg),
             "structure_atoms_csv": str(structure_atoms_csv),
             "structure_bonds_csv": str(structure_bonds_csv),

@@ -1631,13 +1631,47 @@ AppWindow::AppWindow(int w, int h, const char *title)
     solvent_choice_->color(ui(255, 255, 255));
     solvent_choice_->callback(on_preview_cb, this);
 
-    auto *input_label = new Fl_Box(cx, panel_y + 132, cw - 82, 16, "SMILES / structure text");
+    auto *level_label = new Fl_Box(cx, panel_y + 132, 90, 16, "Level of Theory");
+    level_label->box(FL_NO_BOX);
+    level_label->labelsize(12);
+    level_label->labelcolor(ui(86, 97, 112));
+    level_label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+
+    level_choice_ = new Fl_Choice(cx, panel_y + 148, cw, 26);
+    level_choice_->add("low");
+    level_choice_->add("medium");
+    level_choice_->add("high");
+    level_choice_->value(1);
+    level_choice_->box(FL_DOWN_BOX);
+    level_choice_->color(ui(255, 255, 255));
+    level_choice_->tooltip("Level of Theory:\n  Low = MMFF-only, 5 conformers (fast screening)\n  Medium = xTB GFN2, 20 conformers (default)\n  High = xTB GFN2, 50 conformers (publication quality)");
+
+    load_batch_button_ = new Fl_Button(cx, panel_y + 180, cw, 26, "Load Batch...");
+    load_batch_button_->callback(on_load_batch_cb, this);
+    load_batch_button_->box(FL_UP_BOX);
+    load_batch_button_->color(ui(208, 221, 236));
+    load_batch_button_->labelcolor(ui(66, 78, 95));
+    load_batch_button_->labelsize(11);
+    load_batch_button_->tooltip(
+        "Import multiple molecules for batch processing.\n"
+        "Drag-and-drop files onto the window is also supported.\n\n"
+        "Accepted formats:\n"
+        "  .sdf    — multi-molecule SDF (ChemDraw: File > Save As > SDF)\n"
+        "  .cdxml  — ChemDraw XML (File > Save As > ChemDraw XML, requires RDKit)\n"
+        "  .xyz    — concatenated XYZ blocks (one per molecule)\n"
+        "  .csv    — SMILES + name columns; auto-detects header\n"
+        "            Headers: smiles/smi  and  name/compound/id\n"
+        "  .txt    — same as CSV, comma or tab delimited\n"
+        "  .smi    — one SMILES per line, optional name after whitespace\n\n"
+        "Queue limit: 50 molecules.");
+
+    auto *input_label = new Fl_Box(cx, panel_y + 214, cw - 82, 16, "SMILES / structure text");
     input_label->box(FL_NO_BOX);
     input_label->labelsize(12);
     input_label->labelcolor(ui(86, 97, 112));
     input_label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
-    input_mode_btn_ = new Fl_Button(cx + cw - 78, panel_y + 132, 78, 16, "SMILES");
+    input_mode_btn_ = new Fl_Button(cx + cw - 78, panel_y + 214, 78, 16, "SMILES");
     input_mode_btn_->box(FL_FLAT_BOX);
     input_mode_btn_->color(ui(213, 226, 242));
     input_mode_btn_->labelcolor(ui(58, 80, 108));
@@ -1646,19 +1680,19 @@ AppWindow::AppWindow(int w, int h, const char *title)
         static_cast<AppWindow *>(ud)->cycle_input_mode();
     }, this);
 
-    input_box_ = new ColoredInputEditor(cx, panel_y + 148, cw, 64);
+    input_box_ = new ColoredInputEditor(cx, panel_y + 230, cw, 64);
     input_box_->value("CCO");
     input_box_->set_syntax_mode(InputSyntaxMode::SmilesLike);
     input_box_->when(FL_WHEN_CHANGED | FL_WHEN_ENTER_KEY);
     input_box_->callback(on_preview_cb, this);
 
-    auto *structure_title = new Fl_Box(cx, panel_y + 296, cw - 196, 20, "Interactive Structure");
+    auto *structure_title = new Fl_Box(cx, panel_y + 378, cw - 196, 20, "Interactive Structure");
     structure_title->box(FL_NO_BOX);
     structure_title->labelsize(12);
     structure_title->labelcolor(ui(86, 97, 112));
     structure_title->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
 
-    edit_button_ = new Fl_Button(cx + cw - 196, panel_y + 294, 104, 24, "Edit xyzedit");
+    edit_button_ = new Fl_Button(cx + cw - 196, panel_y + 376, 104, 24, "Edit xyzedit");
     edit_button_->callback(on_edit_structure_cb, this);
     edit_button_->box(FL_UP_BOX);
     edit_button_->color(ui(207, 218, 233));
@@ -1666,7 +1700,7 @@ AppWindow::AppWindow(int w, int h, const char *title)
     edit_button_->labelfont(FL_HELVETICA_BOLD);
     edit_button_->labelsize(11);
 
-    preview_button_ = new Fl_Button(cx + cw - 86, panel_y + 294, 76, 24, "Preview");
+    preview_button_ = new Fl_Button(cx + cw - 86, panel_y + 376, 76, 24, "Preview");
     preview_button_->callback(on_preview_cb, this);
     preview_button_->box(FL_UP_BOX);
     preview_button_->color(ui(198, 211, 228));
@@ -1675,7 +1709,7 @@ AppWindow::AppWindow(int w, int h, const char *title)
     preview_button_->labelsize(11);
 
     structure_area_x_ = cx;
-    structure_area_y_ = panel_y + 322;
+    structure_area_y_ = panel_y + 404;
     structure_area_w_ = cw;
     structure_area_h_ = 380;
 
@@ -1710,7 +1744,7 @@ AppWindow::AppWindow(int w, int h, const char *title)
     compare_structure_widget_->set_empty_message("No comparison structure");
     compare_structure_widget_->hide();
 
-    queue_button_ = new Fl_Button(cx, panel_y + 712, 120, 26, "Queue");
+    queue_button_ = new Fl_Button(cx, panel_y + 794, 120, 26, "Queue");
     queue_button_->callback(on_queue_job_cb, this);
     queue_button_->box(FL_UP_BOX);
     queue_button_->color(ui(218, 225, 236));
@@ -2059,6 +2093,29 @@ AppWindow::~AppWindow() {
 }
 
 int AppWindow::handle(int event) {
+    if (event == FL_DND_ENTER || event == FL_DND_DRAG) {
+        return 1;
+    }
+    if (event == FL_DND_RELEASE) {
+        return 1;
+    }
+    if (event == FL_PASTE) {
+        const char *raw = Fl::event_text();
+        if (raw != nullptr) {
+            std::istringstream dnd_ss(raw);
+            std::string dnd_line;
+            while (std::getline(dnd_ss, dnd_line)) {
+                if (!dnd_line.empty() && dnd_line.back() == '\r') dnd_line.pop_back();
+                if (dnd_line.rfind("file://", 0) == 0) dnd_line = dnd_line.substr(7);
+                while (!dnd_line.empty() &&
+                       (dnd_line.back() == '\r' || dnd_line.back() == '\n' || dnd_line.back() == ' '))
+                    dnd_line.pop_back();
+                if (!dnd_line.empty()) import_batch_file(dnd_line);
+            }
+        }
+        return 1;
+    }
+
     if (event == FL_PUSH && Fl::event_button() == FL_RIGHT_MOUSE) {
         if (maybe_show_queue_context_menu()) {
             return 1;
@@ -2171,6 +2228,10 @@ void AppWindow::on_load_experimental_cb(Fl_Widget *, void *userdata) {
 
 void AppWindow::on_clear_experimental_cb(Fl_Widget *, void *userdata) {
     static_cast<AppWindow *>(userdata)->on_clear_experimental();
+}
+
+void AppWindow::on_load_batch_cb(Fl_Widget *, void *userdata) {
+    static_cast<AppWindow *>(userdata)->on_load_batch();
 }
 
 void AppWindow::on_export_spectrum_cb(Fl_Widget *, void *userdata) {
@@ -2316,6 +2377,7 @@ void AppWindow::queue_current_input() {
 
     const char *solvent = solvent_choice_->text(solvent_choice_->value());
     const char *workflow = workflow_choice_ != nullptr ? workflow_choice_->text(workflow_choice_->value()) : "all";
+    const char *lot_text = level_choice_ != nullptr ? level_choice_->text(level_choice_->value()) : "medium";
     WorkflowKind workflow_kind = workflow_kind_from_string(workflow ? workflow : "all");
     if (workflow_kind == WorkflowKind::Unknown) {
         workflow_kind = WorkflowKind::All;
@@ -2341,6 +2403,7 @@ void AppWindow::queue_current_input() {
             job.config.solvent = solvent ? solvent : "cdcl3";
             job.config.nucleus = "auto";
             job.config.line_shape = "lorentzian";
+            job.config.level_of_theory = lot_text ? lot_text : "medium";
             job.id = "q" + std::to_string(jobs_.size() + 1);
             jobs_.push_back(std::move(job));
             if (!queued_any) {
@@ -3312,6 +3375,73 @@ void AppWindow::on_clear_experimental() {
     refresh_experimental_choice();
     apply_active_experimental_overlay();
     status_box_->copy_label(("Removed experimental overlay: " + removed).c_str());
+}
+
+void AppWindow::on_load_batch() {
+    Fl_Native_File_Chooser chooser;
+    chooser.title("Open Batch File");
+    chooser.type(Fl_Native_File_Chooser::BROWSE_FILE);
+    chooser.filter(
+        "SDF (multi-molecule)\t*.sdf\n"
+        "ChemDraw XML\t*.cdxml\n"
+        "Multi-XYZ\t*.xyz\n"
+        "CSV (SMILES + name columns)\t*.csv\n"
+        "TXT (SMILES + name columns)\t*.txt\n"
+        "SMILES file\t*.smi\n"
+        "All files\t*");
+    if (chooser.show() != 0) return;
+    const char *filename = chooser.filename();
+    if (filename == nullptr || std::string(filename).empty()) return;
+    import_batch_file(std::string(filename));
+}
+
+void AppWindow::import_batch_file(const std::string &path) {
+    // Use the default JobConfig to obtain the Python executable path (needed for CDXML).
+    JobConfig default_cfg;
+    auto entries = parse_batch_file(path, default_cfg.python_executable);
+    if (entries.empty()) {
+        std::ostringstream msg;
+        msg << "No molecules found in: " << path;
+        status_box_->copy_label(msg.str().c_str());
+        return;
+    }
+
+    const char *solvent_txt  = solvent_choice_->text(solvent_choice_->value());
+    const char *workflow_txt = workflow_choice_->text(workflow_choice_->value());
+    const char *lot_txt      = level_choice_->text(level_choice_->value());
+    WorkflowKind wk = workflow_kind_from_string(workflow_txt ? workflow_txt : "all");
+    if (wk == WorkflowKind::Unknown) wk = WorkflowKind::All;
+
+    std::size_t added = 0;
+    {
+        std::lock_guard<std::mutex> lock(jobs_mutex_);
+        for (const auto &entry : entries) {
+            if (jobs_.size() >= 50) break;
+            QueuedJob job;
+            job.status = "pending";
+            job.config.job_name         = entry.name.empty()
+                                              ? ("mol_" + std::to_string(jobs_.size() + 1))
+                                              : entry.name;
+            job.config.input_value      = entry.input_value;
+            job.config.input_format     = entry.input_format;
+            job.config.workflow_kind    = wk;
+            job.config.solvent          = solvent_txt ? solvent_txt : "cdcl3";
+            job.config.nucleus          = "auto";
+            job.config.line_shape       = "lorentzian";
+            job.config.level_of_theory  = lot_txt ? lot_txt : "medium";
+            job.id = "q" + std::to_string(jobs_.size() + 1);
+            jobs_.push_back(std::move(job));
+            ++added;
+        }
+        if (worker_running_ && run_scope_ == RunScope::PendingQueue && added > 0) {
+            run_total_ += static_cast<int>(added);
+        }
+    }
+
+    std::ostringstream status_msg;
+    status_msg << "Loaded " << added << " molecule" << (added != 1 ? "s" : "") << " from batch file";
+    status_box_->copy_label(status_msg.str().c_str());
+    refresh_queue_browser();
 }
 
 void AppWindow::on_export_spectrum() {

@@ -175,7 +175,8 @@ JobOutputs Pipeline::run_impl(
         request_file << "    \"energy_window_kcal\": " << config.energy_window_kcal << ",\n";
         request_file << "    \"line_shape\": \"" << escape_json(config.line_shape) << "\",\n";
         request_file << "    \"fwhm_hz\": " << config.fwhm_hz << ",\n";
-        request_file << "    \"need_editable_xyz\": " << (config.need_editable_xyz ? "true" : "false") << "\n";
+        request_file << "    \"need_editable_xyz\": " << (config.need_editable_xyz ? "true" : "false") << ",\n";
+        request_file << "    \"level_of_theory\": \"" << escape_json(config.level_of_theory) << "\"\n";
         request_file << "  },\n";
         request_file << "  \"output_dir\": \"" << escape_json(output_dir.string()) << "\",\n";
         request_file << "  \"progress_json\": \"" << escape_json(progress_path.string()) << "\"\n";

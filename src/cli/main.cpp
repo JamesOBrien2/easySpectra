@@ -1,9 +1,11 @@
+#include "core/batch_parser.h"
 #include "core/job.h"
 #include "core/pipeline.h"
 
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -11,7 +13,8 @@ void print_help() {
     std::cout << "easySpectra CLI\n"
               << "Usage:\n"
               << "  easynmr --input <value> [options]\n"
-              << "  easynmr --input <reactant> --compare <product> [options]\n\n"
+              << "  easynmr --input <reactant> --compare <product> [options]\n"
+              << "  easynmr --batch-smi <file> [options]\n\n"
               << "Options:\n"
               << "  --input <value>                Input content (e.g. SMILES)\n"
               << "  --input-format <smiles|mol|sdf|xyz>\n"
@@ -19,7 +22,8 @@ void print_help() {
               << "                                 (implies --workflow compare)\n"
               << "  --compare-format <smiles|mol|sdf|xyz>\n"
               << "  --name <job_name>\n"
-              << "  --workflow <all|nmr|cd|compare>\n"
+              << "  --workflow <all|nmr|cd|ir|uvvis|compare|properties>\n"
+              << "  --level <low|medium|high>      Level of theory (default: medium)\n"
               << "  --output-dir <path>\n"
               << "  --solvent <cdcl3|dmso|h2o>\n"
               << "  --nucleus <auto|1H|13C|19F|31P>\n"
@@ -32,6 +36,11 @@ void print_help() {
               << "  --ph <number>\n"
               << "  --manual-lock\n"
               << "  --python <path_to_python>\n"
+              << "  --batch-sdf <file>             Queue all molecules from an SDF file\n"
+              << "  --batch-csv <file>             Queue molecules from a CSV file (smiles + name columns)\n"
+              << "  --batch-smi <file>             Queue molecules from a SMILES file (one per line)\n"
+              << "  --batch-xyz <file>             Queue molecules from a multi-XYZ file\n"
+              << "  --batch-cdxml <file>           Queue molecules from a ChemDraw XML file (requires RDKit)\n"
               << "  -h, --help\n";
 }
 
@@ -39,6 +48,7 @@ void print_help() {
 
 int main(int argc, char **argv) {
     easynmr::JobConfig config;
+    std::vector<easynmr::BatchEntry> batch_entries;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -137,10 +147,43 @@ int main(int argc, char **argv) {
             config.python_executable = take_value(arg);
             continue;
         }
+        if (arg == "--level") {
+            config.level_of_theory = take_value(arg);
+            continue;
+        }
+        if (arg == "--batch-sdf" || arg == "--batch-csv" || arg == "--batch-smi" ||
+            arg == "--batch-xyz" || arg == "--batch-cdxml") {
+            auto new_entries = easynmr::parse_batch_file(take_value(arg), config.python_executable);
+            for (auto &e : new_entries) batch_entries.push_back(std::move(e));
+            continue;
+        }
 
         std::cerr << "Unknown argument: " << arg << "\n";
         print_help();
         return 1;
+    }
+
+    // Batch mode: if any --batch-* files were loaded, run them all.
+    if (!batch_entries.empty()) {
+        int ok = 0;
+        int fail = 0;
+        for (const auto &entry : batch_entries) {
+            easynmr::JobConfig bcfg = config;
+            bcfg.input_value  = entry.input_value;
+            bcfg.input_format = entry.input_format;
+            if (!entry.name.empty()) bcfg.job_name = entry.name;
+            easynmr::Pipeline bpipeline;
+            const auto bres = bpipeline.run(bcfg);
+            if (bres.status == "ok" || bres.status == "success") {
+                std::cout << "[OK]   " << bcfg.job_name << " → " << bres.output_dir << "\n";
+                ++ok;
+            } else {
+                std::cerr << "[FAIL] " << bcfg.job_name << ": " << bres.message << "\n";
+                ++fail;
+            }
+        }
+        std::cout << "Batch complete: " << ok << " ok, " << fail << " failed\n";
+        return (fail > 0) ? 1 : 0;
     }
 
     if (config.input_value.empty()) {

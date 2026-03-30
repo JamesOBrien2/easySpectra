@@ -127,6 +127,7 @@ struct JobConfig {
     std::string line_shape = "lorentzian";
     double fwhm_hz = 1.0;
     bool need_editable_xyz = false;
+    std::string level_of_theory = "medium";
     std::string output_root = "output";
     std::string python_executable = EASYSPECTRA_DEFAULT_PYTHON;
     std::string backend_script = EASYSPECTRA_BACKEND_SCRIPT;

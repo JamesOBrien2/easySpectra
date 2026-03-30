@@ -302,6 +302,41 @@ void PropertiesWidget::set_properties(const MolecularProperties &props) {
         }
     }
 
+    if (props.has_ms) {
+        main_browser_->add(" ");
+        main_browser_->add("@b@BMass Spectrometry (exact mass)");
+        char ms_buf[128];
+        std::snprintf(ms_buf, sizeof(ms_buf), "  [M] neutral:  %.4f Da", props.ms_monoisotopic);
+        main_browser_->add(ms_buf);
+
+        // Positive adducts
+        main_browser_->add("  \xe2\x80\x94 Positive mode \xe2\x80\x94");
+        for (const auto &a : props.ms_adducts) {
+            if (a.mode != "+") continue;
+            std::snprintf(ms_buf, sizeof(ms_buf), "  %-16s  %.4f", a.name.c_str(), a.mz);
+            main_browser_->add(ms_buf);
+        }
+
+        // Negative adducts
+        main_browser_->add("  \xe2\x80\x94 Negative mode \xe2\x80\x94");
+        for (const auto &a : props.ms_adducts) {
+            if (a.mode != "-") continue;
+            std::snprintf(ms_buf, sizeof(ms_buf), "  %-16s  %.4f", a.name.c_str(), a.mz);
+            main_browser_->add(ms_buf);
+        }
+
+        // Isotope pattern
+        if (!props.isotope_peaks.empty()) {
+            main_browser_->add("  \xe2\x80\x94 Isotope pattern (rel. to base peak) \xe2\x80\x94");
+            for (const auto &p : props.isotope_peaks) {
+                std::string label = "  M";
+                if (p.mass_offset > 0) label += "+" + std::to_string(p.mass_offset);
+                std::snprintf(ms_buf, sizeof(ms_buf), "%-8s  %5.1f%%", label.c_str(), p.relative_abundance);
+                main_browser_->add(ms_buf);
+            }
+        }
+    }
+
     if (!props.warnings.empty()) {
         main_browser_->add(" ");
         main_browser_->add("@b@BWarnings");

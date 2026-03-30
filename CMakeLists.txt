@@ -14,6 +14,7 @@ add_library(easynmr_core
     src/core/spectral_product.cpp
     src/core/spectrum.cpp
     src/core/properties.cpp
+    src/core/batch_parser.cpp
 )
 
 target_include_directories(easynmr_core

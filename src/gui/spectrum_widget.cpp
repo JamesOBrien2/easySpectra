@@ -44,6 +44,13 @@ bool is_uvvis_label(const std::string &label) {
            || lower.find("visible") != std::string::npos;
 }
 
+bool is_ms_label(const std::string &label) {
+    const std::string lower = to_lower_copy(label);
+    return lower == "ms+" || lower == "ms-" || lower == "ms"
+           || lower.find("ms+") != std::string::npos
+           || lower.find("ms-") != std::string::npos;
+}
+
 struct SpectrumPalette {
     Fl_Color panel_bg = rgb(250, 252, 255);
     Fl_Color panel_border = rgb(221, 229, 240);
@@ -139,6 +146,19 @@ SpectrumPalette palette_for_nucleus(const std::string &nucleus_label) {
         p.shift_up = rgb(130, 176, 214);
         p.selection_fill = rgb(224, 214, 244);
         p.selection_border = rgb(170, 150, 213);
+        return p;
+    }
+    if (is_ms_label(lower)) {
+        p.trace_soft = rgb(148, 196, 186);
+        p.trace_main = rgb(80,  156, 142);
+        p.marker_selected = rgb(100, 175, 162);
+        p.marker_band = rgb(218, 244, 240);
+        p.reference = rgb(85,  148, 136);
+        p.reference_label_bg = rgb(230, 248, 244);
+        p.title = rgb(55, 110, 100);
+        p.title_rule = rgb(130, 196, 183);
+        p.selection_fill = rgb(200, 238, 232);
+        p.selection_border = rgb(110, 184, 171);
         return p;
     }
     return p;
@@ -386,7 +406,7 @@ double SpectrumWidget::pixel_to_ppm(int pixel_x) const {
     const int inner_right = x() + w() - kPadRight;
     const int inner_w = std::max(1, inner_right - inner_left);
     const double x_norm = std::max(0.0, std::min(1.0, static_cast<double>(pixel_x - inner_left) / inner_w));
-    if (is_cd_label(nucleus_label_)) {
+    if (is_cd_label(nucleus_label_) || is_uvvis_label(nucleus_label_) || is_ms_label(nucleus_label_)) {
         return min_ppm + x_norm * ppm_range;
     }
     return max_ppm - x_norm * ppm_range;
@@ -446,7 +466,7 @@ void SpectrumWidget::draw() {
     const auto ppm_bounds = active_ppm_bounds();
     const double min_ppm = ppm_bounds.first;
     const double max_ppm = ppm_bounds.second;
-    const bool reverse_axis = !(is_cd_label(nucleus_label_) || is_uvvis_label(nucleus_label_));
+    const bool reverse_axis = !(is_cd_label(nucleus_label_) || is_uvvis_label(nucleus_label_) || is_ms_label(nucleus_label_));
     bool has_calc_intensity = false;
     double min_intensity = 0.0;
     double max_intensity = 1.0;
@@ -820,7 +840,9 @@ void SpectrumWidget::draw() {
     fl_font(FL_HELVETICA, axis_font_size);
     const char *axis_label_text = is_ir_label(nucleus_label_)
                                       ? "wavenumber [cm\u207b\u00b9]"
-                                      : (reverse_axis ? "delta [ppm]" : "wavelength [nm]");
+                                      : is_ms_label(nucleus_label_)
+                                          ? "m/z"
+                                          : (reverse_axis ? "delta [ppm]" : "wavelength [nm]");
     const int axis_label_w = static_cast<int>(fl_width(axis_label_text));
     const int axis_label_x = std::max(x() + 2, plot_x0 + plot_w - axis_label_w - 2);
     fl_draw(axis_label_text, axis_label_x, y() + h() - 4);

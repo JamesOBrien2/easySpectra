@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/batch_parser.h"
 #include "core/job.h"
 #include "core/pipeline.h"
 #include "core/properties.h"
@@ -79,6 +80,7 @@ class AppWindow : public Fl_Double_Window {
     static void on_select_experimental_cb(Fl_Widget *, void *userdata);
     static void on_load_experimental_cb(Fl_Widget *, void *userdata);
     static void on_clear_experimental_cb(Fl_Widget *, void *userdata);
+    static void on_load_batch_cb(Fl_Widget *, void *userdata);
     static void on_export_spectrum_cb(Fl_Widget *, void *userdata);
     static void on_select_example_cb(Fl_Widget *, void *userdata);
     static void on_load_example_bundle_cb(Fl_Widget *, void *userdata);
@@ -104,6 +106,8 @@ class AppWindow : public Fl_Double_Window {
     void on_select_experimental();
     void on_load_experimental();
     void on_clear_experimental();
+    void on_load_batch();
+    void import_batch_file(const std::string &path);
     void on_export_spectrum();
     void on_select_example();
     void on_load_example(bool with_experimental);
@@ -144,6 +148,8 @@ class AppWindow : public Fl_Double_Window {
     Fl_Input *job_name_input_ = nullptr;
     Fl_Choice *workflow_choice_ = nullptr;
     Fl_Choice *solvent_choice_ = nullptr;
+    Fl_Choice *level_choice_ = nullptr;
+    Fl_Button *load_batch_button_ = nullptr;
     Fl_Button *preview_button_ = nullptr;
     Fl_Button *edit_button_ = nullptr;
     Fl_Button *queue_button_ = nullptr;

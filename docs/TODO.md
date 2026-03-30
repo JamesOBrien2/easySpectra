@@ -33,8 +33,8 @@ Legend:
 - [x] IR prediction v1 (Boltzmann-weighted xTB Hessian, group-based fallback, Lorentzian broadening, GFN2 scaling factor). Horizon: `Near`, Difficulty: `Medium`.
 - [ ] IR quality controls (scaling factor presets, line broadening presets, and simple peak labels). Horizon: `Near`, Difficulty: `Low`.
 - [ ] UV-Vis prediction via xTB --stda (simplified TD-DFT absorption spectrum). Horizon: `Near`, Difficulty: `Medium`.
-- [ ] Exact mass and isotope pattern calculator from molecular formula (quick MS support without fragmentation). Horizon: `Near`, Difficulty: `Low`.
-- [ ] Common adduct support for MS mode (`[M+H]+`, `[M+Na]+`, `[M-H]-`, etc.) with m/z table output. Horizon: `Near`, Difficulty: `Low`.
+- [x] Exact mass and isotope pattern calculator from molecular formula (quick MS support without fragmentation). Horizon: `Near`, Difficulty: `Low`.
+- [x] Common adduct support for MS mode (`[M+H]+`, `[M+Na]+`, `[M-H]-`, etc.) with m/z table output. Horizon: `Near`, Difficulty: `Low`.
 - [ ] Property panel for per-conformer and ensemble values (dipole, HOMO/LUMO gap, relative energies). Horizon: `Near`, Difficulty: `Medium`.
 - [ ] Basic thermochemistry summary from current calculations (relative free energy-style comparisons where available). Horizon: `Mid`, Difficulty: `Medium`.
 - [ ] Mass-spec fragmentation prototype (rule-based fragments for simple molecules). Horizon: `Mid`, Difficulty: `High`.

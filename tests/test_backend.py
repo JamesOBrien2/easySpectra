@@ -17,11 +17,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 import easynmr_backend as B
 from easynmr_backend import (
+    LOT_PRESETS,
     ConformerResult,
     GroupPrediction,
     MULTIPLICITY_LABELS,
     COMPARE_TOLERANCE_PPM,
     boltzmann_weights,
+    compute_ms_data,
     estimate_c_shift,
     estimate_f_shift,
     estimate_h_shift,
@@ -909,3 +911,191 @@ class TestComputeSpectralComparison:
         groups = [_make_group(4.0)]
         result = compute_spectral_comparison(groups, groups, spec, spec, "13c")
         assert 0.0 <= result["spectral_similarity_pct"] <= 100.0
+
+
+# ---------------------------------------------------------------------------
+# LOT_PRESETS — level-of-theory preset table
+# ---------------------------------------------------------------------------
+
+class TestLotPresets:
+    """Verify the LOT_PRESETS table has the correct structure and ordering."""
+
+    def test_all_levels_present(self):
+        assert set(LOT_PRESETS.keys()) == {"low", "medium", "high"}
+
+    def test_required_keys_in_each_preset(self):
+        for level, preset in LOT_PRESETS.items():
+            for key in ("max_conformers", "energy_window_kcal", "force_mmff", "xtb_timeout"):
+                assert key in preset, f"Missing key '{key}' in LOT_PRESETS['{level}']"
+
+    def test_low_forces_mmff(self):
+        assert LOT_PRESETS["low"]["force_mmff"] is True
+
+    def test_medium_and_high_use_xtb(self):
+        assert LOT_PRESETS["medium"]["force_mmff"] is False
+        assert LOT_PRESETS["high"]["force_mmff"] is False
+
+    def test_conformer_count_increases_with_level(self):
+        assert LOT_PRESETS["low"]["max_conformers"] < LOT_PRESETS["medium"]["max_conformers"]
+        assert LOT_PRESETS["medium"]["max_conformers"] < LOT_PRESETS["high"]["max_conformers"]
+
+    def test_energy_window_increases_with_level(self):
+        assert LOT_PRESETS["low"]["energy_window_kcal"] < LOT_PRESETS["medium"]["energy_window_kcal"]
+        assert LOT_PRESETS["medium"]["energy_window_kcal"] < LOT_PRESETS["high"]["energy_window_kcal"]
+
+    def test_high_has_longer_timeout_than_medium(self):
+        assert LOT_PRESETS["high"]["xtb_timeout"] >= LOT_PRESETS["medium"]["xtb_timeout"]
+
+    def test_medium_matches_original_defaults(self):
+        # Medium must stay identical to the pre-LOT defaults so existing jobs are unaffected.
+        assert LOT_PRESETS["medium"]["max_conformers"] == 20
+        assert LOT_PRESETS["medium"]["energy_window_kcal"] == 6.0
+        assert LOT_PRESETS["medium"]["xtb_timeout"] == 25
+
+
+# ---------------------------------------------------------------------------
+# LOT override logic — max_conformers / energy_window resolution
+# ---------------------------------------------------------------------------
+
+class TestLotOverrideLogic:
+    """Verify that LOT preset values are applied correctly when C++ sends its defaults."""
+
+    def _resolve(self, level: str, req_max: int = 50, req_ewin: float = 6.0):
+        """Replicate the settings-resolution logic from main() in the backend."""
+        lot_preset = LOT_PRESETS.get(level, LOT_PRESETS["medium"])
+        max_conformers = req_max if req_max != 50 else lot_preset["max_conformers"]
+        energy_window = req_ewin if req_ewin != 6.0 else lot_preset["energy_window_kcal"]
+        return max_conformers, energy_window
+
+    def test_low_preset_applied_when_cpp_sends_defaults(self):
+        max_conf, ewin = self._resolve("low", req_max=50, req_ewin=6.0)
+        assert max_conf == LOT_PRESETS["low"]["max_conformers"]
+        assert ewin == LOT_PRESETS["low"]["energy_window_kcal"]
+
+    def test_high_preset_applied_when_cpp_sends_defaults(self):
+        max_conf, ewin = self._resolve("high", req_max=50, req_ewin=6.0)
+        assert max_conf == LOT_PRESETS["high"]["max_conformers"]
+        assert ewin == LOT_PRESETS["high"]["energy_window_kcal"]
+
+    def test_explicit_cli_override_wins_over_preset(self):
+        # User passed --max-conformers 10 explicitly → C++ writes 10 (≠ 50 default) → use it.
+        max_conf, _ = self._resolve("low", req_max=10)
+        assert max_conf == 10
+
+    def test_unknown_level_falls_back_to_medium(self):
+        max_conf, ewin = self._resolve("ultra", req_max=50, req_ewin=6.0)
+        assert max_conf == LOT_PRESETS["medium"]["max_conformers"]
+        assert ewin == LOT_PRESETS["medium"]["energy_window_kcal"]
+
+
+# ---------------------------------------------------------------------------
+# optimize_conformers — force_mmff parameter
+# ---------------------------------------------------------------------------
+
+class TestOptimizeConformersForceMMFF:
+    """Verify that force_mmff=True skips xTB even when xTB is on PATH."""
+
+    def _make_mol_with_confs(self, smiles: str, n: int = 3):
+        mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+        params = AllChem.ETKDGv3()
+        params.randomSeed = 42
+        AllChem.EmbedMultipleConfs(mol, numConfs=n, params=params)
+        return mol, list(range(mol.GetNumConformers()))
+
+    def test_force_mmff_returns_mmff_results(self, tmp_path):
+        mol, conf_ids = self._make_mol_with_confs("CCO")
+        results = B.optimize_conformers(
+            mol, conf_ids, solvent="chcl3",
+            output_dir=tmp_path, warnings=[],
+            force_mmff=True,
+        )
+        assert len(results) == len(conf_ids)
+        for r in results:
+            assert r.method in {"mmff", "mmff-fallback"}, \
+                f"Expected MMFF method, got '{r.method}'"
+
+    def test_force_mmff_does_not_call_xtb(self, tmp_path, monkeypatch):
+        """With force_mmff=True the function must not invoke run_xtb_optimize."""
+        calls = []
+        monkeypatch.setattr(B, "run_xtb_optimize",
+                            lambda *a, **kw: calls.append(1) or None)
+        mol, conf_ids = self._make_mol_with_confs("CCO")
+        B.optimize_conformers(
+            mol, conf_ids, solvent="chcl3",
+            output_dir=tmp_path, warnings=[],
+            force_mmff=True,
+        )
+        assert calls == [], "run_xtb_optimize should not be called when force_mmff=True"
+
+    def test_all_results_have_finite_energies(self, tmp_path):
+        mol, conf_ids = self._make_mol_with_confs("c1ccccc1")
+        results = B.optimize_conformers(
+            mol, conf_ids, solvent="chcl3",
+            output_dir=tmp_path, warnings=[],
+            force_mmff=True,
+        )
+        for r in results:
+            assert r.energy_eh is not None
+            assert math.isfinite(r.energy_eh)
+
+
+class TestComputeMsData:
+    """Tests for compute_ms_data() and _compute_isotope_pattern()."""
+
+    # Monoisotopic masses of adduct atoms (same as backend constants)
+    H_MASS = 1.007276
+
+    def _mol(self, smi: str):
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+        mol = Chem.AddHs(Chem.MolFromSmiles(smi))
+        AllChem.EmbedMolecule(mol, randomSeed=42)
+        return mol
+
+    def test_aspirin_monoisotopic_mass(self):
+        """Aspirin C9H8O4 has exact mass 180.0423 Da."""
+        data = compute_ms_data(self._mol("CC(=O)Oc1ccccc1C(=O)O"))
+        assert abs(data["monoisotopic_mass"] - 180.0423) < 0.001
+
+    def test_aspirin_mplus_h(self):
+        """[M+H]+ for aspirin should be ~181.0495."""
+        data = compute_ms_data(self._mol("CC(=O)Oc1ccccc1C(=O)O"))
+        adducts = {a["name"]: a for a in data["adducts"]}
+        assert "[M+H]+" in adducts
+        assert abs(adducts["[M+H]+"]["mz"] - 181.0495) < 0.001
+
+    def test_all_adduct_names_present(self):
+        expected = {"[M+H]+", "[M+Na]+", "[M+K]+", "[M+NH4]+", "[M+2H]2+",
+                    "[M-H]-", "[M+Cl]-", "[M+HCOO]-", "[M+CH3COO]-", "[M-2H]2-"}
+        data = compute_ms_data(self._mol("CCO"))
+        names = {a["name"] for a in data["adducts"]}
+        assert expected == names
+
+    def test_adduct_modes(self):
+        data = compute_ms_data(self._mol("CCO"))
+        pos = [a for a in data["adducts"] if a["mode"] == "+"]
+        neg = [a for a in data["adducts"] if a["mode"] == "-"]
+        assert len(pos) == 5
+        assert len(neg) == 5
+
+    def test_isotope_pattern_base_peak_is_100(self):
+        data = compute_ms_data(self._mol("c1ccccc1"))
+        peaks = data["isotope_pattern"]
+        assert peaks[0]["mass_offset"] == 0
+        assert peaks[0]["relative_abundance"] == pytest.approx(100.0)
+
+    def test_benzene_m_plus_1_approx(self):
+        """Benzene C6H6: M+1 ≈ 6*1.07% = 6.42% relative abundance."""
+        data = compute_ms_data(self._mol("c1ccccc1"))
+        peaks = {p["mass_offset"]: p["relative_abundance"] for p in data["isotope_pattern"]}
+        assert abs(peaks.get(1, 0) - 6.4) < 0.5
+
+    def test_formula_field(self):
+        data = compute_ms_data(self._mol("CC(=O)Oc1ccccc1C(=O)O"))
+        assert data["formula"] == "C9H8O4"
+
+    def test_charge_doubly_charged(self):
+        data = compute_ms_data(self._mol("CCO"))
+        adducts = {a["name"]: a for a in data["adducts"]}
+        assert adducts["[M+2H]2+"]["charge"] == 2
+        assert adducts["[M-2H]2-"]["charge"] == 2

@@ -175,6 +175,36 @@ MolecularProperties load_properties_json(const std::string &path) {
         props.has_redox = (props.e_ox_nhe != 0.0 || props.e_red_nhe != 0.0);
     }
 
+    // MS adducts + isotope pattern
+    std::string ms_block = extract_block(json, "ms", '{', '}');
+    if (!ms_block.empty()) {
+        props.ms_monoisotopic = extract_number_field(ms_block, "monoisotopic_mass");
+
+        std::string adducts_arr = extract_block(ms_block, "adducts", '[', ']');
+        if (!adducts_arr.empty()) {
+            for (const auto &obj : split_json_objects(adducts_arr)) {
+                MsAdduct a;
+                a.name   = extract_string_field(obj, "name");
+                a.mz     = extract_number_field(obj, "mz");
+                a.charge = extract_int_field(obj, "charge", 1);
+                a.mode   = extract_string_field(obj, "mode");
+                props.ms_adducts.push_back(a);
+            }
+        }
+
+        std::string iso_arr = extract_block(ms_block, "isotope_pattern", '[', ']');
+        if (!iso_arr.empty()) {
+            for (const auto &obj : split_json_objects(iso_arr)) {
+                IsotopePeak p;
+                p.mass_offset        = extract_int_field(obj, "mass_offset");
+                p.relative_abundance = extract_number_field(obj, "relative_abundance");
+                props.isotope_peaks.push_back(p);
+            }
+        }
+
+        props.has_ms = (props.ms_monoisotopic > 0.0);
+    }
+
     // Warnings
     props.warnings = extract_string_array(json, "warnings");
 

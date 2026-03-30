@@ -23,6 +23,18 @@ struct PkaGroup {
     std::string site_type;  // "acidic" or "basic"
 };
 
+struct MsAdduct {
+    std::string name;
+    double mz   = 0.0;
+    int charge  = 1;
+    std::string mode;  // "+" or "-"
+};
+
+struct IsotopePeak {
+    int    mass_offset        = 0;    // 0 = M, 1 = M+1, etc.
+    double relative_abundance = 0.0;  // 0–100 (100 = base peak)
+};
+
 struct MolecularProperties {
     // RDKit descriptors
     std::string formula;
@@ -57,6 +69,12 @@ struct MolecularProperties {
     double e_ox_fc   = 0.0;
     double e_red_fc  = 0.0;
     bool   has_redox = false;
+
+    // MS adducts + isotope pattern
+    double ms_monoisotopic = 0.0;
+    std::vector<MsAdduct> ms_adducts;
+    std::vector<IsotopePeak> isotope_peaks;
+    bool has_ms = false;
 
     std::vector<std::string> warnings;
     bool valid = false;
