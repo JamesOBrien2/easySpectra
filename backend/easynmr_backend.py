@@ -2538,75 +2538,76 @@ def write_spectra_manifest(
             writer.writerow([nucleus_label, str(spectrum_csv), str(peaks_csv), str(assignments_csv)])
 
 
-def generate_ms_spectra(ms_data: dict, output_dir: Path) -> Optional[Path]:
-    """Generate positive and negative mode MS stick spectra with isotope envelopes.
+def generate_ms_spectrum_rows(
+    ms_data: dict, output_dir: Path
+) -> List[Tuple[str, Path, Path, Path]]:
+    """Generate MS+ and MS- spectrum CSVs and return manifest rows (label, csv, peaks, asgn).
 
-    Each adduct's isotope cluster is placed at the correct m/z and broadened
-    with a narrow Lorentzian (FWHM 0.05 Da).  Returns the spectra_manifest.csv
-    path, or None if ms_data is empty.
+    Does NOT write a spectra_manifest.csv — callers append rows to their own manifest.
+    Returns an empty list if ms_data is missing or incomplete.
     """
     adducts = ms_data.get("adducts", [])
     isotope_pattern = ms_data.get("isotope_pattern", [])
     if not adducts or not isotope_pattern:
-        return None
+        return []
 
     FWHM_DA = 0.05
     gamma = FWHM_DA / 2.0
     STEP = 0.005
 
-    def _make_spectrum_csv(mode_adducts: list, csv_path: Path) -> bool:
-        """Write a broadened m/z spectrum for a given list of adducts."""
-        # Collect raw stick peaks: (mz, relative_abundance)
+    empty_peaks = output_dir / "ms_peaks_empty.csv"
+    if not empty_peaks.exists():
+        empty_peaks.write_text("mz,label\n", encoding="utf-8")
+
+    rows: List[Tuple[str, Path, Path, Path]] = []
+    for mode, label, csv_name in (("+", "MS+", "ms_positive.csv"), ("-", "MS-", "ms_negative.csv")):
+        mode_adducts = [a for a in adducts if a["mode"] == mode]
+        if not mode_adducts:
+            continue
+
         sticks: list = []
         for adduct in mode_adducts:
             base_mz = adduct["mz"]
             charge = adduct["charge"]
             for iso in isotope_pattern:
-                # Isotope spacing = 1 Da / charge (0.5 for doubly charged)
-                peak_mz = base_mz + iso["mass_offset"] / charge
-                sticks.append((peak_mz, iso["relative_abundance"]))
+                sticks.append((base_mz + iso["mass_offset"] / charge, iso["relative_abundance"]))
 
         if not sticks:
-            return False
+            continue
 
         min_mz = min(p[0] for p in sticks) - 3.0
         max_mz = max(p[0] for p in sticks) + 3.0
         mz_axis = np.arange(min_mz, max_mz + STEP, STEP)
         intensity = np.zeros(len(mz_axis))
-
         for peak_mz, peak_int in sticks:
             dx = mz_axis - peak_mz
             intensity += peak_int * (gamma * gamma) / (dx * dx + gamma * gamma)
-
         max_int = intensity.max()
         if max_int > 0:
             intensity /= max_int
 
+        csv_path = output_dir / csv_name
         with csv_path.open("w", newline="", encoding="utf-8") as f:
             f.write("mz,intensity\n")
             for mz_val, int_val in zip(mz_axis, intensity):
                 f.write(f"{mz_val:.4f},{int_val:.8f}\n")
-        return True
+        rows.append((label, csv_path, empty_peaks, empty_peaks))
 
-    pos_adducts = [a for a in adducts if a["mode"] == "+"]
-    neg_adducts = [a for a in adducts if a["mode"] == "-"]
+    return rows
 
-    pos_csv  = output_dir / "ms_positive.csv"
-    neg_csv  = output_dir / "ms_negative.csv"
-    empty_peaks = output_dir / "ms_peaks_empty.csv"
-    empty_peaks.write_text("mz,label\n", encoding="utf-8")
 
-    manifest_rows: list = []
-    if _make_spectrum_csv(pos_adducts, pos_csv):
-        manifest_rows.append(("MS+", pos_csv, empty_peaks, empty_peaks))
-    if _make_spectrum_csv(neg_adducts, neg_csv):
-        manifest_rows.append(("MS-", neg_csv, empty_peaks, empty_peaks))
+def generate_ms_spectra(ms_data: dict, output_dir: Path) -> Optional[Path]:
+    """Generate MS spectra and write a standalone spectra_manifest.csv.
 
-    if not manifest_rows:
+    Used by the properties-only workflow.  Other workflows use
+    generate_ms_spectrum_rows() and append directly to their own manifest.
+    Returns the manifest path, or None if ms_data is empty.
+    """
+    rows = generate_ms_spectrum_rows(ms_data, output_dir)
+    if not rows:
         return None
-
     manifest_path = output_dir / "spectra_manifest.csv"
-    write_spectra_manifest(manifest_path, manifest_rows)
+    write_spectra_manifest(manifest_path, rows)
     return manifest_path
 
 
@@ -3475,6 +3476,16 @@ def main() -> int:
     audit_json = output_dir / "audit.json"
 
     write_progress(progress_path, "write_outputs", "Writing spectrum, peak groups, assignments, and audit", 0.96)
+
+    # For workflows that include Properties (e.g. "all"), append MS+ and MS-
+    # to the existing spectra_rows so they appear in the nucleus dropdown.
+    if run_properties and properties_json_path is not None:
+        try:
+            for row in generate_ms_spectrum_rows(props.get("ms", {}), output_dir):
+                spectra_rows.append(row)
+        except Exception as exc:
+            warnings.append(f"MS spectrum generation failed: {exc}")
+
     write_spectra_manifest(spectra_manifest_csv, spectra_rows)
 
     runtime_s = time.time() - start_time
