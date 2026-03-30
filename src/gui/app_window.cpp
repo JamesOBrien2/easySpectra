@@ -2278,7 +2278,22 @@ void AppWindow::on_worker_awake(void *userdata) {
         }
         if (should_reload_selected) {
             self->load_selected_job_visuals();
-            if (self->properties_view_active_) {
+            // For Properties jobs that produced MS spectra, switch to spectra view
+            // so the MS spectrum is immediately visible.  The user can still click
+            // "Properties" to see the descriptor/adduct panel.
+            bool has_ms_spectra = false;
+            {
+                std::lock_guard<std::mutex> lock(self->jobs_mutex_);
+                const std::size_t idx = static_cast<std::size_t>(selected - 1);
+                if (idx < self->jobs_.size()) {
+                    const auto &j = self->jobs_[idx];
+                    has_ms_spectra = (j.config.workflow_kind == WorkflowKind::Properties
+                                      && !j.spectra_manifest_csv.empty());
+                }
+            }
+            if (has_ms_spectra) {
+                self->show_spectra_view();
+            } else if (self->properties_view_active_) {
                 self->refresh_properties_panel(selected - 1);
             }
         }
@@ -2862,8 +2877,24 @@ void AppWindow::on_select_job() {
         }
     }
     load_selected_job_visuals();
-    if (properties_view_active_) {
-        refresh_properties_panel(selected_job_index_);
+    // If the newly selected job is a Properties job with MS spectra, show
+    // spectra view so the MS spectrum is visible; otherwise keep current view.
+    {
+        bool has_ms_spectra = false;
+        if (selected > 0) {
+            std::lock_guard<std::mutex> lock(jobs_mutex_);
+            const std::size_t idx = static_cast<std::size_t>(selected - 1);
+            if (idx < jobs_.size()) {
+                const auto &j = jobs_[idx];
+                has_ms_spectra = (j.config.workflow_kind == WorkflowKind::Properties
+                                  && !j.spectra_manifest_csv.empty());
+            }
+        }
+        if (has_ms_spectra) {
+            show_spectra_view();
+        } else if (properties_view_active_) {
+            refresh_properties_panel(selected_job_index_);
+        }
     }
     maybe_apply_example_overlay_for_active_selection();
     refresh_queue_browser();
